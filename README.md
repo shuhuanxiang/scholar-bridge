@@ -1,3 +1,5 @@
+English | [简体中文](./README.zh-CN.md)
+
 # ScholarBridge
 
 An academic-writing bridge for [Obsidian](https://obsidian.md): LaTeX ↔ Markdown conversion, formula-aware diffing, and fully local AI translation.
