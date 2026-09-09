@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "inlineSourceMap": true,
+    "inlineSources": true,
+    "module": "ESNext",
+    "target": "ES2022",
+    "moduleResolution": "Bundler",
+    "allowJs": true,
+    "noImplicitAny": true,
+    "strict": true,
+    "strictNullChecks": true,
+    "isolatedModules": true,
+    "noUnusedLocals": false,
+    "skipLibCheck": true,
+    "types": ["node", "obsidian"],
+    "lib": ["DOM", "ES2022", "ES2022.Intl"]
+  },
+  "include": ["src/**/*.ts"]
+}

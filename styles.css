@@ -1,0 +1,237 @@
+/* ScholarBridge diff view styles */
+
+.scholar-bridge-diff-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  font-size: var(--font-ui-smaller);
+}
+
+/* v0.3 per-change accept/reject */
+.scholar-bridge-diff-rowwrap {
+  display: flex;
+  flex-direction: column;
+  grid-column: 1 / -1;
+}
+
+.scholar-bridge-diff-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.scholar-bridge-diff-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 2px 0 6px;
+}
+
+.scholar-bridge-diff-actions button {
+  font-size: var(--font-ui-smaller);
+}
+
+.scholar-bridge-diff-actions .scholar-bridge-diff-accepted {
+  color: var(--text-on-accent);
+  background-color: var(--interactive-accent);
+}
+
+.scholar-bridge-diff-applybar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+}
+
+.scholar-bridge-diff-header {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  margin-bottom: 8px;
+}
+
+.scholar-bridge-diff-cell {
+  padding: 4px 6px;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.scholar-bridge-diff-cell.scholar-bridge-status-changed {
+  background: var(--background-modifier-active-hover);
+}
+
+.scholar-bridge-diff-cell.scholar-bridge-status-added {
+  background: rgba(var(--color-green-rgb), 0.08);
+}
+
+.scholar-bridge-diff-cell.scholar-bridge-status-removed {
+  background: rgba(var(--color-red-rgb), 0.08);
+}
+
+.scholar-bridge-diff-inline ins,
+.scholar-bridge-diff-cell ins,
+.scholar-bridge-diff-cellchange ins {
+  text-decoration: none;
+  background: rgba(var(--color-green-rgb), 0.25);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.scholar-bridge-diff-inline del,
+.scholar-bridge-diff-cell del,
+.scholar-bridge-diff-cellchange del {
+  background: rgba(var(--color-red-rgb), 0.25);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.scholar-bridge-diff-table {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scholar-bridge-diff-cellchange {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.scholar-bridge-diff-token {
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: smaller;
+}
+
+/* Translator status bar (TECHNICAL_DESIGN §17.2) */
+.scholar-bridge-status-ok {
+  color: var(--text-success, var(--text-normal));
+}
+
+.scholar-bridge-status-warn {
+  color: var(--text-warning);
+}
+
+.scholar-bridge-status-error {
+  color: var(--text-error);
+}
+
+.scholar-bridge-status {
+  color: var(--text-muted);
+}
+
+/* Translation preview (TECHNICAL_DESIGN §17.4) */
+.scholar-bridge-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  margin-bottom: 8px;
+}
+
+.scholar-bridge-preview-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.scholar-bridge-preview-card {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.scholar-bridge-preview-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+.scholar-bridge-preview-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.scholar-bridge-preview-source {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.scholar-bridge-preview-textarea {
+  width: 100%;
+  min-height: 60px;
+  resize: vertical;
+}
+
+.scholar-bridge-preview-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Algorithm float (```scholar-algorithm fences, converted egin{algorithm})
+ * ------------------------------------------------------------------------- */
+.scholar-bridge-algo {
+  border-top: 1px solid var(--background-modifier-border);
+  border-bottom: 1px solid var(--background-modifier-border);
+  margin: 0.8em 0;
+  padding: 0.4em 0.2em;
+  background: var(--background-primary);
+}
+.scholar-bridge-algo-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6em;
+  padding: 0.15em 0.4em 0.55em;
+}
+.scholar-bridge-algo-name {
+  font-weight: 700;
+  font-variant-caps: small-caps;
+  letter-spacing: 0.02em;
+}
+.scholar-bridge-algo-caption {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.95em;
+}
+.scholar-bridge-algo-body {
+  counter-reset: sb-algo-line;
+  font-family: var(--font-monospace);
+  font-size: 0.88em;
+}
+.scholar-bridge-algo-line {
+  position: relative;
+  padding: 0.1em 0.4em 0.1em 3.2em;
+  line-height: 1.6;
+}
+.scholar-bridge-algo-line::before {
+  counter-increment: sb-algo-line;
+  content: counter(sb-algo-line);
+  position: absolute;
+  left: 0;
+  width: 2.4em;
+  text-align: right;
+  color: var(--text-faint);
+  font-size: 0.85em;
+}
+.scholar-bridge-algo-kw {
+  font-weight: 700;
+  margin-right: 0.45em;
+}
+.scholar-bridge-algo-line > .scholar-bridge-algo-kw:last-child {
+  margin-right: 0;
+}
+.scholar-bridge-algo-text :is(p) {
+  margin: 0;
+  display: inline;
+}
+.scholar-bridge-algo-text mjx-container {
+  font-size: 92% !important;
+}

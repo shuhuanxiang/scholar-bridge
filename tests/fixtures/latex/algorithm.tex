@@ -1,0 +1,12 @@
+\begin{algorithm}[t]
+\caption{FedContra training loop.}
+\label{alg:fedcontra}
+\begin{algorithmic}
+\STATE Initialize global model $\theta_0$
+\FOR{each round $t = 1, \dots, T$}
+\STATE Sample clients and broadcast $\theta_t$
+\STATE Update local models with task loss
+\STATE Aggregate with contrastive regularizer
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
