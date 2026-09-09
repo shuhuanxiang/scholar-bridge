@@ -1,3 +1,4 @@
+import { stat as fsStat } from "node:fs/promises";
 import { MarkdownView, Notice, type Editor } from "obsidian";
 import { t } from "../i18n";
 import type ScholarBridgePlugin from "../main";
@@ -161,23 +162,7 @@ async function modelIdentity(plugin: ScholarBridgePlugin): Promise<string> {
 }
 
 async function nodeStat(path: string): Promise<{ isFile(): boolean; size: number; mtimeMs: number } | null> {
-  const fs = await nodeFs();
-  return fs.promises.stat(path);
-}
-
-/**
- * Node's fs without a bundler-visible static require: esbuild packs for the
- * browser platform and cannot resolve "node:fs", so the module name rides a
- * variable — the same pattern node-fetch-impl uses (runtime Electron supplies
- * require / getBuiltinModule either way).
- */
-async function nodeFs(): Promise<typeof import("node:fs")> {
-  if (typeof process !== "undefined" && typeof process.getBuiltinModule === "function") {
-    return process.getBuiltinModule("node:fs") as typeof import("node:fs");
-  }
-  const moduleName = "node:fs";
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require(moduleName) as typeof import("node:fs");
+  return fsStat(path);
 }
 
 /** The temperature setting participates in every request AND the cache key. */
@@ -329,7 +314,7 @@ export async function showPreview(
     applied: false,
     filePath,
   });
-  plugin.app.workspace.revealLeaf(leaf);
+  await plugin.app.workspace.revealLeaf(leaf);
 }
 
 async function retryItem(

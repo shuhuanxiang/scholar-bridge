@@ -3,7 +3,6 @@ import { t } from "../i18n";
 import type ScholarBridgePlugin from "../main";
 import { parseMarkdown } from "../core/parser/markdown/markdown-parser";
 import {
-  writeLatexArticle,
   writeLatexFragment,
 } from "../core/writer/latex/latex-writer";
 import { convertLatexFragment, looksLikeLatex } from "./paste-handler";

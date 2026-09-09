@@ -27,7 +27,7 @@ export function parseMarkdownInline(
   while (i < input.length) {
     const ch = input[i];
 
-    if (ch === "\\" && /^\\[\\`*_{}$\[\]()#+!.~>-]/.test(input.slice(i))) {
+    if (ch === "\\" && /^\\[\\`*_{}$[\]()#+!.~>-]/.test(input.slice(i))) {
       text += input[i + 1];
       i += 2;
       continue;

@@ -1,3 +1,4 @@
+import { spawn as spawnChildProcess } from "node:child_process";
 import { ProviderError, type TranslationProvider } from "../provider";
 
 /**
@@ -52,7 +53,7 @@ export class LlamaServerManager {
   private statusValue: ServerStatus = "stopped";
   private lastError: string | null = null;
   private stderrTail: string[] = [];
-  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private idleTimer: number | null = null;
   private waiters: ((err: Error | null) => void)[] = [];
   /** Monotonically increasing id per start() invocation (ownership guard). */
   private startGeneration = 0;
@@ -256,7 +257,7 @@ export class LlamaServerManager {
           settle(() => reject(new ProviderError("timeout", `llama-server not ready after ${timeoutMs}ms`)));
           return;
         }
-        setTimeout(() => void attempt(), 500);
+        window.setTimeout(() => void attempt(), 500);
       };
       waiter = (err: Error | null) => {
         if (err) settle(() => reject(err));
@@ -279,33 +280,33 @@ export class LlamaServerManager {
     if (!proc) return; // already crashed/exited: nothing to wait for
     const released = new Promise<void>((resolve) => {
       let settled = false;
-      let forceTimer: ReturnType<typeof setTimeout> | null = null;
+      let forceTimer: number | null = null;
       const done = (): void => {
         if (settled) return;
         settled = true;
-        if (forceTimer) clearTimeout(forceTimer);
+        if (forceTimer !== null) window.clearTimeout(forceTimer);
         resolve();
       };
       // SIGTERM first, escalate to SIGKILL — but keep waiting for the exit
       // event either way so callers (notably restart()) only continue once
       // the process is really gone and the port is free. The extra timer
       // bounds the wait so an unresponsive child cannot hang unload forever.
-      const killTimer = setTimeout(() => {
+      const killTimer = window.setTimeout(() => {
         try {
           proc.kill("SIGKILL");
         } catch {
           /* already dead */
         }
-        forceTimer = setTimeout(done, 2_000);
+        forceTimer = window.setTimeout(done, 2_000);
       }, 2_000);
       proc.on("exit", () => {
-        clearTimeout(killTimer);
+        window.clearTimeout(killTimer);
         done();
       });
       try {
         proc.kill("SIGTERM");
       } catch {
-        clearTimeout(killTimer);
+        window.clearTimeout(killTimer);
         done();
       }
     });
@@ -366,7 +367,7 @@ export class LlamaServerManager {
   private armIdleTimer(): void {
     this.clearIdleTimer();
     if (this.cfg.idleTimeoutMs <= 0) return;
-    this.idleTimer = setTimeout(() => {
+    this.idleTimer = window.setTimeout(() => {
       // Still generating? Postpone instead of killing an in-flight request.
       // Bounded, so a missing endRequest() can never pin the server forever.
       if (this.inFlight > 0 && this.idlePostponements < MAX_IDLE_POSTPONEMENTS) {
@@ -379,8 +380,8 @@ export class LlamaServerManager {
   }
 
   private clearIdleTimer(): void {
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
+    if (this.idleTimer !== null) {
+      window.clearTimeout(this.idleTimer);
       this.idleTimer = null;
     }
   }
@@ -405,18 +406,8 @@ export class LlamaServerManager {
 
 /** Real spawner used by the plugin (node:child_process via Obsidian desktop). */
 export function createNodeSpawner(): Spawner {
-  // Lazy require keeps this module importable in unit tests (no node types
-  // beyond the injected interface are used at module scope).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const req = (globalThis as any).process?.getBuiltinModule?.bind((globalThis as any).process);
-  return (command, args) => {
-    if (req) {
-      const childProcess = req("node:child_process");
-      return childProcess.spawn(command, args, { windowsHide: true }) as unknown as SpawnedProcess;
-    }
-    // Fallback for runtimes without process.getBuiltinModule (older Electron).
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const childProcess = require("node:child_process") as typeof import("node:child_process");
-    return childProcess.spawn(command, args, { windowsHide: true }) as unknown as SpawnedProcess;
-  };
+  // Node's ChildProcess.kill accepts a narrower signal union than our
+  // SpawnedProcess contract, so the structural conversion needs the cast.
+  return (command, args) =>
+    spawnChildProcess(command, args, { windowsHide: true }) as unknown as SpawnedProcess;
 }

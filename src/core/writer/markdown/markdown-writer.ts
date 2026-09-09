@@ -145,7 +145,7 @@ function writeInline(node: ScholarInlineNode): string {
  * (the inline parser unescapes).
  */
 function escapeMarkdown(text: string): string {
-  return text.replace(/([\\`*_\[\]$])/g, "\\$1");
+  return text.replace(/([\\`*_[\]$])/g, "\\$1");
 }
 
 /**
@@ -231,7 +231,6 @@ function writeGfmTable(table: TableNode): string {
 }
 
 function writeHtmlTable(table: TableNode): string {
-  const alignAttr = (a: string | undefined) => (a ? ` align="${a}"` : "");
   const lines: string[] = ["<table>"];
   if (table.caption) lines.push(`  <caption>${escapeHtml(table.caption)}</caption>`);
   for (const row of table.rows) {

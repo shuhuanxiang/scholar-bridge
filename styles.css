@@ -232,6 +232,17 @@
   margin: 0;
   display: inline;
 }
-.scholar-bridge-algo-text mjx-container {
-  font-size: 92% !important;
+/* Two class levels + element: outranks MathJax's own mjx-container rule
+   without resorting to !important. */
+.scholar-bridge-algo .scholar-bridge-algo-text mjx-container {
+  font-size: 92%;
+}
+
+/* Shared button rows (confirm modal, glossary import). */
+.scholar-bridge-button-row {
+  display: flex;
+  gap: 8px;
+}
+.scholar-bridge-import-textarea {
+  width: 100%;
 }

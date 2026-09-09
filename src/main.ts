@@ -66,7 +66,7 @@ export default class ScholarBridgePlugin extends Plugin {
 
     // Scaffold placeholder; real commands are registered per milestone.
     this.addCommand({
-      id: "scholar-bridge-status",
+      id: "status",
       name: t("Show plugin status"),
       callback: () => {
         new Notice(
@@ -169,7 +169,7 @@ export default class ScholarBridgePlugin extends Plugin {
         text: `\n${block}\n`,
       };
     });
-    this.app.workspace.revealLeaf(view.leaf);
+    await this.app.workspace.revealLeaf(view.leaf);
     editor.transaction({ changes });
   }
 
@@ -183,20 +183,17 @@ export default class ScholarBridgePlugin extends Plugin {
   }
 
   /**
-   * Awaited so the owned llama-server is really gone before the plugin (or
-   * Obsidian) tears down: an un-awaited stop() leaves the process behind on
-   * Windows, where the deferred SIGKILL timer never gets a chance to run.
+   * Initiates the llama-server shutdown synchronously: stop() sends SIGTERM
+   * immediately and self-bounds with the force-kill timer, so the owned
+   * process never outlives the plugin (Obsidian does not await onunload).
    */
-  async onunload(): Promise<void> {
-    // The owned llama-server must not outlive the plugin.
+  onunload(): void {
     const manager = this.serverManager;
     this.serverManager = null;
     if (!manager) return;
-    try {
-      await manager.stop();
-    } catch {
+    manager.stop().catch(() => {
       /* shutdown errors must never block unload */
-    }
+    });
   }
 
   private async loadSettings(): Promise<void> {
@@ -205,7 +202,7 @@ export default class ScholarBridgePlugin extends Plugin {
     } | null;
     // The cache is stored beside the settings in data.json; keep it out of
     // the typed settings object.
-    const { translationCache: storedCache, ...storedSettings } = (stored ?? {}) as Record<string, unknown>;
+    const { translationCache: storedCache, ...storedSettings } = stored ?? {};
     this.settings = {
       ...structuredClone(DEFAULT_SETTINGS),
       ...storedSettings,

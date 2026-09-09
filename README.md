@@ -27,7 +27,7 @@ An academic-writing bridge for [Obsidian](https://obsidian.md): LaTeX ↔ Markdo
 
 ## Requirements
 
-- Obsidian 1.5.0 or later, **desktop only** (the translation feature manages a local process, which mobile cannot do).
+- Obsidian 1.8.7 or later, **desktop only** (the translation feature manages a local process, which mobile cannot do).
 - For translation: a [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` executable and a GGUF model — or any `llama-server` instance you already have running.
 
 ## Installation

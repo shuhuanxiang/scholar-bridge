@@ -206,7 +206,7 @@ export class LlamaClient implements TranslationProvider {
     }
     const controller = new AbortController();
     let timedOut = false;
-    const timer = setTimeout(() => {
+    const timer = window.setTimeout(() => {
       timedOut = true;
       controller.abort(new DOMException("timeout", "TimeoutError"));
     }, timeoutMs);
@@ -237,7 +237,7 @@ export class LlamaClient implements TranslationProvider {
       }
       throw new ProviderError("unavailable", `cannot reach llama-server at ${this.baseUrl}: ${String(err)}`);
     } finally {
-      clearTimeout(timer);
+      window.clearTimeout(timer);
       outer?.removeEventListener("abort", onOuterAbort);
     }
   }

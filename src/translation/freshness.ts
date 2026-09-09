@@ -193,17 +193,17 @@ function isCommentTail(line: string): boolean {
 }
 
 function isCommentOpener(line: string): boolean {
-  return /^\s*<\!--/.test(line) && line.includes("-->");
+  return /^\s*<!--/.test(line) && line.includes("-->");
 }
 
 function isCommentLine(line: string): boolean {
-  return /^\s*<\!--/.test(line) || /^\s*-->/.test(line);
+  return /^\s*<!--/.test(line) || /^\s*-->/.test(line);
 }
 
 /** Index of the `<!--` opener for a comment whose tail is at `tailIndex`. */
 function walkToCommentOpen(lines: string[], tailIndex: number): number {
   for (let i = tailIndex; i >= 0; i--) {
-    if (/^\s*<\!--/.test(lines[i])) return i;
+    if (/^\s*<!--/.test(lines[i])) return i;
   }
   return -1;
 }

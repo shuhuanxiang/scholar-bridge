@@ -27,7 +27,7 @@
 
 ## 环境要求
 
-- Obsidian 1.5.0 或更高版本，**仅限桌面端**（翻译功能需要管理本地进程，移动端无法支持）。
+- Obsidian 1.8.7 或更高版本，**仅限桌面端**（翻译功能需要管理本地进程，移动端无法支持）。
 - 翻译功能需要 [llama.cpp](https://github.com/ggml-org/llama.cpp) 的 `llama-server` 可执行文件和 GGUF 模型——也可以连接到你已经在运行的任意 `llama-server` 实例。
 
 ## 安装

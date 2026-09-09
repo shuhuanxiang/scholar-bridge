@@ -1,6 +1,6 @@
 {
   "name": "scholar-bridge",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "LaTeX ↔ Markdown conversion, Chinese/English/formula-aware diff, and local llama.cpp translation for Obsidian.",
   "main": "main.js",
   "private": true,
@@ -14,6 +14,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "esbuild": "^0.25.0",
+    "happy-dom": "^20.14.0",
     "obsidian": "^1.8.7",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

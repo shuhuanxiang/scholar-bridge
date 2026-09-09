@@ -1,4 +1,4 @@
-import { TFile, TFolder, type App, type TFile as TFileType } from "obsidian";
+import { TFile, TFolder, type App } from "obsidian";
 import { parseMarkdown } from "../core/parser/markdown/markdown-parser";
 import {
   writeLatexArticle,
@@ -12,11 +12,11 @@ import {
  */
 export async function exportNoteToLatex(
   app: App,
-  file: TFileType,
+  file: TFile,
   profile: ExportProfile,
   opts: { overwrite?: boolean } = {},
 ): Promise<string> {
-  const markdown = await app.vault.read(file as TFile);
+  const markdown = await app.vault.read(file);
   const doc = parseMarkdown(markdown);
   const latex =
     profile === "fragment"
@@ -41,6 +41,6 @@ export async function exportNoteToLatex(
 }
 
 /** Destination path for a note's LaTeX export. */
-export function latexExportPath(file: TFileType): string {
+export function latexExportPath(file: TFile): string {
   return `${file.path.replace(/\.md$/, "")}.tex`;
 }

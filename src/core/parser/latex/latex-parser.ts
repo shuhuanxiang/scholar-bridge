@@ -132,7 +132,7 @@ export function parseLatexBlocks(body: string, ids: IdAllocator): ScholarBlockNo
           level: SECTION_LEVELS[section.name],
           children: childrenInline,
           ...(section.starred ? { source: { format: "latex", raw: `${section.name}*` } } : {}),
-        } as ScholarBlockNode);
+        });
         i = group.end;
         continue;
       }

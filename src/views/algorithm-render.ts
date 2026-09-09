@@ -83,7 +83,7 @@ async function renderInline(
   holder: HTMLElement,
   markdown: string,
 ): Promise<void> {
-  const tmp = document.createElement("div");
+  const tmp = createDiv();
   await MarkdownRenderer.render(plugin.app, markdown, tmp, sourcePath, component);
   // Unwrap the generated <p> so the line stays one flex row.
   holder.append(...Array.from(tmp.childNodes));
@@ -119,7 +119,7 @@ export function registerAlgorithmRendering(plugin: ScholarBridgePlugin): void {
           }
           if (line.suffix) row.createSpan({ cls: "scholar-bridge-algo-kw", text: line.suffix });
         }
-      } catch (err) {
+      } catch {
         // Never break the document render: fall back to a plain code block.
         el.empty();
         const pre = el.createEl("pre");

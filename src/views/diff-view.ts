@@ -155,7 +155,7 @@ export class DiffView extends ItemView {
       } else {
         new Notice(t("ScholarBridge: applied {{n}} change(s) to {{name}}.", { n: applied.length, name: this.oldFile.basename }));
       }
-      this.computeAndRender();
+      await this.computeAndRender();
     } catch (err) {
       new Notice(t("ScholarBridge: apply failed — {{msg}}", { msg: err instanceof Error ? err.message : String(err) }));
     }
@@ -319,7 +319,7 @@ export function registerDiffView(plugin: ScholarBridgePlugin): void {
       if (!active) return false;
       if (checking) return true;
       new FilePickerModal(plugin, (other) => {
-        openDiff(plugin, active, other);
+        void openDiff(plugin, active, other);
       }, t("Compare with which note?")).open();
       return true;
     },
@@ -332,7 +332,7 @@ export function registerDiffView(plugin: ScholarBridgePlugin): void {
       if (checking) return plugin.app.vault.getMarkdownFiles().length >= 2;
       new FilePickerModal(plugin, (first) => {
         new FilePickerModal(plugin, (second) => {
-          openDiff(plugin, first, second);
+          void openDiff(plugin, first, second);
         }, t("…compare against which note?")).open();
       }, t("Compare which note?")).open();
       return true;
@@ -346,7 +346,7 @@ async function openDiff(plugin: ScholarBridgePlugin, oldFile: TFile, newFile: TF
   const view = leaf.view;
   if (view instanceof DiffView) {
     view.setFiles(oldFile, newFile);
-    plugin.app.workspace.revealLeaf(leaf);
+    await plugin.app.workspace.revealLeaf(leaf);
   } else {
     new Notice(t("ScholarBridge: could not open diff view."));
   }

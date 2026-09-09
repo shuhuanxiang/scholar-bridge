@@ -1,3 +1,5 @@
+import * as http from "node:http";
+import * as https from "node:https";
 import type { FetchLike } from "./client";
 
 /**
@@ -14,20 +16,6 @@ import type { FetchLike } from "./client";
 /** Mirrors LlamaClient.MAX_RESPONSE_BYTES; kept local to avoid an import cycle. */
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
-type HttpModule = typeof import("node:http");
-type IncomingMessage = import("node:http").IncomingMessage;
-
-function builtin(name: "node:http" | "node:https"): HttpModule {
-  if (
-    typeof process !== "undefined" &&
-    typeof process.getBuiltinModule === "function"
-  ) {
-    return process.getBuiltinModule(name) as HttpModule;
-  }
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require(name) as HttpModule;
-}
-
 function isLoopbackUrl(url: URL): boolean {
   return url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]" || url.hostname === "::1");
 }
@@ -36,10 +24,7 @@ function isLoopbackUrl(url: URL): boolean {
 export function nodeFetchSupports(url: string): boolean {
   try {
     const parsed = new URL(url);
-    if (parsed.protocol !== "http:") return false;
-    if (!isLoopbackUrl(parsed)) return false;
-    builtin("node:http");
-    return true;
+    return parsed.protocol === "http:" && isLoopbackUrl(parsed);
   } catch {
     return false;
   }
@@ -51,7 +36,7 @@ function abortableError(name: string, message: string): Error {
   return err;
 }
 
-function readMessage(res: IncomingMessage, reject: (err: Error) => void, settle: (body: string) => void): void {
+function readMessage(res: http.IncomingMessage, reject: (err: Error) => void, settle: (body: string) => void): void {
   const chunks: Buffer[] = [];
   let total = 0;
   let settled = false;
@@ -72,7 +57,7 @@ function readMessage(res: IncomingMessage, reject: (err: Error) => void, settle:
     settled = true;
     settle(Buffer.concat(chunks).toString("utf-8"));
   });
-  res.on("error", (err) => {
+  res.on("error", (err: Error) => {
     if (settled) return;
     settled = true;
     reject(err);
@@ -84,22 +69,19 @@ function readMessage(res: IncomingMessage, reject: (err: Error) => void, settle:
  * Node builtins are unavailable so the caller can fall back to platform fetch.
  */
 export function createNodeFetchImpl(): FetchLike {
-  const http = builtin("node:http");
-  const https = builtin("node:https");
-
   const impl: FetchLike = (url, init) =>
     new Promise((resolve, reject) => {
       let parsed: URL;
       try {
         parsed = new URL(url);
       } catch (err) {
-        reject(err as Error);
+        reject(err instanceof Error ? err : new Error(String(err)));
         return;
       }
       const mod = parsed.protocol === "https:" ? https : http;
       const signal = init?.signal;
 
-      let req: import("node:http").ClientRequest;
+      let req: http.ClientRequest;
       try {
         req = mod.request(parsed, {
           method: init?.method ?? "GET",
@@ -119,7 +101,7 @@ export function createNodeFetchImpl(): FetchLike {
           );
         });
       } catch (err) {
-        reject(err as Error);
+        reject(err instanceof Error ? err : new Error(String(err)));
         return;
       }
 

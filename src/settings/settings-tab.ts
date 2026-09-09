@@ -22,8 +22,6 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: t("ScholarBridge settings") });
-
     new Setting(containerEl).setName(t("Conversion")).setHeading();
     new Setting(containerEl)
       .setName(t("LaTeX paste handling"))
@@ -34,7 +32,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
           .setValue(this.settings.pasteMode)
           .onChange(async (v) => {
             this.settings.pasteMode = v as ScholarBridgeSettings["pasteMode"];
-            await this.onChange();
+            this.onChange();
           }),
       );
 
@@ -47,19 +45,19 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
           .setValue(this.settings.llama.executablePath)
           .onChange(async (v) => {
             this.settings.llama.executablePath = v.trim();
-            await this.onChange();
+            this.onChange();
           }),
       );
     new Setting(containerEl).setName(t("GGUF model file")).addText((t) =>
       t.setValue(this.settings.llama.modelPath).onChange(async (v) => {
         this.settings.llama.modelPath = v.trim();
-        await this.onChange();
+        this.onChange();
       }),
     );
     new Setting(containerEl).setName(t("Host")).addText((t) =>
       t.setValue(this.settings.llama.host).onChange(async (v) => {
         this.settings.llama.host = v.trim() || "127.0.0.1";
-        await this.onChange();
+        this.onChange();
       }),
     );
     new Setting(containerEl).setName(t("Port")).addText((t) =>
@@ -67,7 +65,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
         const port = Number.parseInt(v, 10);
         if (Number.isFinite(port) && port > 0 && port < 65536) {
           this.settings.llama.port = port;
-          await this.onChange();
+          this.onChange();
         }
       }),
     );
@@ -79,7 +77,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
           const n = Number.parseInt(v, 10);
           if (Number.isFinite(n) && n >= 0) {
             this.settings.llama.gpuLayers = n;
-            await this.onChange();
+            this.onChange();
           }
         }),
       );
@@ -88,7 +86,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
         const n = Number.parseInt(v, 10);
         if (Number.isFinite(n) && n > 0) {
           this.settings.llama.contextSize = n;
-          await this.onChange();
+          this.onChange();
         }
       }),
     );
@@ -97,7 +95,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
         const n = Number.parseFloat(v);
         if (Number.isFinite(n) && n >= 0) {
           this.settings.llama.temperature = n;
-          await this.onChange();
+          this.onChange();
         }
       }),
     );
@@ -111,7 +109,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
             const n = Number.parseInt(v, 10);
             if (Number.isFinite(n) && n >= 0) {
               this.settings.llama.idleShutdownMinutes = n;
-              await this.onChange();
+              this.onChange();
             }
           }),
       );
@@ -125,7 +123,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
             const n = Number.parseInt(v, 10);
             if (Number.isFinite(n) && n >= 1000) {
               this.settings.llama.requestTimeoutMs = n;
-              await this.onChange();
+              this.onChange();
             }
           }),
       );
@@ -135,7 +133,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
       .addToggle((t) =>
         t.setValue(this.settings.llama.confirmSpawn).onChange(async (v) => {
           this.settings.llama.confirmSpawn = v;
-          await this.onChange();
+          this.onChange();
         }),
       );
     new Setting(containerEl)
@@ -148,7 +146,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
       .addToggle((t) =>
         t.setValue(this.settings.autoStartTranslator).onChange(async (v) => {
           this.settings.autoStartTranslator = v;
-          await this.onChange();
+          this.onChange();
         }),
       );
 
@@ -159,7 +157,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
         .setValue(this.settings.sourceLanguage)
         .onChange(async (v) => {
           this.settings.sourceLanguage = v;
-          await this.onChange();
+          this.onChange();
         }),
     );
     new Setting(containerEl).setName(t("Target language")).addDropdown((d) =>
@@ -168,7 +166,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
         .setValue(this.settings.targetLanguage)
         .onChange(async (v) => {
           this.settings.targetLanguage = v;
-          await this.onChange();
+          this.onChange();
         }),
     );
     new Setting(containerEl).setName(t("Translation style")).addDropdown((d) =>
@@ -177,7 +175,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
         .setValue(this.settings.translationStyle)
         .onChange(async (v) => {
           this.settings.translationStyle = v as ScholarBridgeSettings["translationStyle"];
-          await this.onChange();
+          this.onChange();
         }),
     );
     new Setting(containerEl).setName(t("Write mode")).addDropdown((d) =>
@@ -191,7 +189,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
         .setValue(this.settings.writeMode)
         .onChange(async (v) => {
           this.settings.writeMode = v as ScholarBridgeSettings["writeMode"];
-          await this.onChange();
+          this.onChange();
         }),
     );
     new Setting(containerEl)
@@ -207,7 +205,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
           .setValue(serializeGlossary(this.settings.glossary))
           .onChange(async (v) => {
             this.settings.glossary = parseGlossary(v);
-            await this.onChange();
+            this.onChange();
           }),
       )
       .addButton((b) =>
@@ -217,7 +215,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
               // Imported entries override colliding flat entries; the rest of
               // the glossary is kept (merge, not replace).
               this.settings.glossary = { ...this.settings.glossary, ...imported };
-              await this.onChange();
+              this.onChange();
               const importedCount = Object.keys(imported).length;
               const detail = skipped.length ? t(" Skipped {{n}} unusable entr{{suffix}}.", { n: skipped.length, suffix: skipped.length === 1 ? "y" : "ies" }) : "";
               new Notice(t("ScholarBridge: imported {{n}} glossary entr{{suffix}}.{{detail}}", { n: importedCount, suffix: importedCount === 1 ? "y" : "ies", detail }));
@@ -239,7 +237,7 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
         .addToggle((t) =>
           t.setValue(this.settings.diff[key]).onChange(async (v) => {
             this.settings.diff[key] = v;
-            await this.onChange();
+            this.onChange();
           }),
         );
     }
@@ -290,13 +288,10 @@ class GlossaryImportModal extends Modal {
         "Nested form: a term line, then indented “action: preserve” or “zh: translation”. Imported entries override colliding ones.",
       ),
     });
-    const textarea = this.contentEl.createEl("textarea");
+    const textarea = this.contentEl.createEl("textarea", { cls: "scholar-bridge-import-textarea" });
     textarea.rows = 12;
-    textarea.style.width = "100%";
     textarea.setAttr("placeholder", "FedContra:\n  action: preserve\n\nfederated learning:\n  zh: 联邦学习");
-    const buttons = this.contentEl.createDiv();
-    buttons.style.display = "flex";
-    buttons.style.gap = "8px";
+    const buttons = this.contentEl.createDiv("scholar-bridge-button-row");
     buttons
       .createEl("button", { text: t("Import"), cls: "mod-cta" })
       .addEventListener("click", () => {

@@ -125,10 +125,10 @@ function diffBlockPair(oldNode: ScholarBlockNode, newNode: ScholarBlockNode, opt
     case "paragraph":
     case "heading": {
       const newNode2 = newNode as typeof oldNode;
-      const changes = diffInline(oldNode.children, (newNode2 as { children: ScholarInlineNode[] }).children, opts);
+      const changes = diffInline(oldNode.children, newNode2.children, opts);
       // Heading level is part of the change even when the text is identical.
       const levelChanged =
-        oldNode.type === "heading" && (newNode as typeof oldNode).level !== oldNode.level;
+        oldNode.type === "heading" && newNode2.type === "heading" && newNode2.level !== oldNode.level;
       return {
         status: levelChanged || changes.some((c) => c.op !== "equal") ? "changed" : "equal",
         type: oldNode.type,
@@ -203,7 +203,7 @@ function diffBlockPair(oldNode: ScholarBlockNode, newNode: ScholarBlockNode, opt
           changes,
         };
       }
-      const same = signature(oldNode, opts) === signature(newNode as ScholarBlockNode, opts);
+      const same = signature(oldNode, opts) === signature(newNode, opts);
       return same
         ? { status: "equal", type: oldNode.type, oldNode, newNode }
         : { status: "changed", type: oldNode.type, oldNode, newNode };

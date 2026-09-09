@@ -34,9 +34,7 @@ export class ConfirmModal extends Modal {
   onOpen(): void {
     this.contentEl.createEl("h3", { text: this.title });
     this.contentEl.createEl("p", { text: this.message });
-    const buttons = this.contentEl.createDiv();
-    buttons.style.display = "flex";
-    buttons.style.gap = "8px";
+    const buttons = this.contentEl.createDiv("scholar-bridge-button-row");
     buttons
       .createEl("button", { text: this.confirmText, cls: "mod-cta" })
       .addEventListener("click", () => {

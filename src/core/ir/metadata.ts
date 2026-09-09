@@ -53,9 +53,10 @@ export function stableStringify(value: unknown): string {
 function sortValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortValue);
   if (value && typeof value === "object") {
+    const source = value as Record<string, unknown>;
     const out: Record<string, unknown> = {};
-    for (const k of Object.keys(value as Record<string, unknown>).sort()) {
-      out[k] = sortValue((value as Record<string, unknown>)[k]);
+    for (const k of Object.keys(source).sort()) {
+      out[k] = sortValue(source[k]);
     }
     return out;
   }
