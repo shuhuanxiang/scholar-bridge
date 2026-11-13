@@ -22,6 +22,28 @@ jobs:
           cache: npm
 
       - run: npm ci
+      - name: Validate release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const tag = process.env.RELEASE_TAG;
+          const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+          const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const versions = JSON.parse(fs.readFileSync("versions.json", "utf8"));
+
+          if (manifest.version !== tag) {
+            throw new Error(`manifest.json version ${manifest.version} does not match tag ${tag}`);
+          }
+          if (packageJson.version !== tag) {
+            throw new Error(`package.json version ${packageJson.version} does not match tag ${tag}`);
+          }
+          if (!Object.hasOwn(versions, tag)) {
+            throw new Error(`versions.json has no entry for tag ${tag}`);
+          }
+          NODE
       - run: npm test
       - run: npm run build
 
