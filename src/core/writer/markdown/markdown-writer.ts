@@ -6,6 +6,7 @@ import type {
 } from "../../ir/nodes";
 import {
   encodeMetaComment,
+  encodeInlineLatex,
   encodeTranslationEnd,
   encodeTranslationStart,
 } from "../../ir/metadata";
@@ -118,7 +119,7 @@ function writeInline(node: ScholarInlineNode): string {
     case "inline-math":
       return node.display ? `$$${node.latex}$$` : `$${node.latex}$`;
     case "code-span":
-      return node.code.includes("`") ? "`` " + node.code + " ``" : `\`${node.code}\``;
+      return writeCodeSpan(node.code);
     case "strong":
       return `**${node.children.map(writeInline).join("")}**`;
     case "emph":
@@ -131,12 +132,20 @@ function writeInline(node: ScholarInlineNode): string {
       return `[${node.alias ?? node.target}](${node.target}${titleSuffix})`;
     }
     case "citation":
-      return node.raw;
+      return writeCodeSpan(node.raw) + encodeInlineLatex(node.raw, node.keys);
     case "inline-raw":
-      return node.raw;
+      return writeCodeSpan(node.raw) + encodeInlineLatex(node.raw);
     default:
       return "";
   }
+}
+
+function writeCodeSpan(code: string): string {
+  let length = 1;
+  for (const run of code.matchAll(/`+/g)) length = Math.max(length, run[0].length + 1);
+  const fence = "`".repeat(length);
+  const padding = /^[` ]|[` ]$/.test(code) && Boolean(code.trim()) ? " " : "";
+  return `${fence}${padding}${code}${padding}${fence}`;
 }
 
 /**

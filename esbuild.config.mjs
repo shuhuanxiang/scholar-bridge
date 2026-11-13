@@ -15,6 +15,7 @@ const context = await esbuild.context({
     "node:fs/promises",
     "node:http",
     "node:https",
+    "node:path",
     "@codemirror/autocomplete",
     "@codemirror/collab",
     "@codemirror/commands",

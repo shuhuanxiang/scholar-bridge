@@ -1,5 +1,6 @@
 import { TFile, TFolder, type App } from "obsidian";
 import { parseMarkdown } from "../core/parser/markdown/markdown-parser";
+import { prepareExportAssets } from "./assets";
 import {
   writeLatexArticle,
   writeLatexFragment,
@@ -17,7 +18,7 @@ export async function exportNoteToLatex(
   opts: { overwrite?: boolean } = {},
 ): Promise<string> {
   const markdown = await app.vault.read(file);
-  const doc = parseMarkdown(markdown);
+  const doc = prepareExportAssets(app, parseMarkdown(markdown), file, file.parent?.path ?? file.path.split("/").slice(0, -1).join("/"));
   const latex =
     profile === "fragment"
       ? writeLatexFragment(doc)

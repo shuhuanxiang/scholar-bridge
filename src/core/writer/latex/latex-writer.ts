@@ -4,6 +4,8 @@ import type {
   ScholarInlineNode,
   TableNode,
 } from "../../ir/nodes";
+import { parseMarkdown } from "../../parser/markdown/markdown-parser";
+import { sourceHash } from "../../ir/source-hash";
 
 /**
  * Scholar IR → LaTeX (TECHNICAL_DESIGN.md §8).
@@ -14,10 +16,30 @@ import type {
 
 export type ExportProfile = "fragment" | "article" | "ctexart";
 
+/** Inserted translations are annotations; replacements are the note's body. */
+export function prepareLatexDocument(doc: ScholarDocument): ScholarDocument {
+  const expand = (nodes: ScholarBlockNode[]): ScholarBlockNode[] => nodes.flatMap((node, index): ScholarBlockNode[] => {
+    if (node.type === "translation-block") {
+      if (node.meta.writeMode === "insert-below" || node.meta.writeMode === "bilingual") return [];
+      const precedingSource = nodes[index - 1]?.source?.raw;
+      if (!node.meta.writeMode && precedingSource && sourceHash(precedingSource) === node.meta.sourceHash) return [];
+      // Legacy markers did not record a mode. Retain their prose rather than
+      // silently dropping a possible replacement of the only source text.
+      return expand(parseMarkdown(node.text).children);
+    }
+    if (node.type === "quote") return [{ ...node, children: expand(node.children) }];
+    if (node.type === "list") {
+      return [{ ...node, items: node.items.map((item) => ({ ...item, children: expand(item.children) })) }];
+    }
+    return [node];
+  });
+  return { ...doc, children: expand(doc.children) };
+}
+
 export function writeLatexFragment(doc: ScholarDocument): string {
   // Blocks own their interior whitespace (verbatim/lstlisting/raw bodies keep
   // blank runs); normalization happens only at block boundaries via the join.
-  const parts = doc.children.map(writeBlock).filter((s) => s.length > 0);
+  const parts = prepareLatexDocument(doc).children.map(writeBlock).filter((s) => s.length > 0);
   return parts.join("\n\n").trim() + "\n";
 }
 
@@ -41,13 +63,31 @@ export function writeLatexArticle(doc: ScholarDocument, profile: "article" | "ct
 /** Package inference from IR content (TECHNICAL_DESIGN.md §8.2). */
 export function detectPackages(doc: ScholarDocument): string[] {
   const packages = new Set<string>();
+  const visitInline = (nodes: ScholarInlineNode[]): void => {
+    for (const node of nodes) {
+      if (node.type === "inline-math") packages.add("amsmath");
+      if (node.type === "link" && node.kind === "url") packages.add("hyperref");
+      if (node.type === "strong" || node.type === "emph") visitInline(node.children);
+    }
+  };
   const visit = (nodes: ScholarBlockNode[]) => {
     for (const node of nodes) {
       switch (node.type) {
+        case "heading":
+        case "paragraph":
+          visitInline(node.children);
+          break;
+        case "math":
+          packages.add("amsmath");
+          break;
+        case "code":
+          if (node.language) packages.add("listings");
+          break;
         case "figure":
           packages.add("graphicx");
           break;
         case "table":
+          for (const row of node.rows) for (const cell of row) visitInline(cell.content);
           if (node.booktabs) packages.add("booktabs");
           if (node.rows.some((r) => r.some((c) => (c.rowSpan ?? 1) > 1))) packages.add("multirow");
           break;
@@ -66,7 +106,7 @@ export function detectPackages(doc: ScholarDocument): string[] {
       }
     }
   };
-  visit(doc.children);
+  visit(prepareLatexDocument(doc).children);
   // hyperref when URLs/links exist
   const needsHyperref = doc.children.some((n) => documentHasUrlLink(n));
   if (needsHyperref) packages.add("hyperref");

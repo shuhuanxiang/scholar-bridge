@@ -1,17 +1,14 @@
 import { IdAllocator, makeDocument } from "../../ir/document";
 import {
   decodeMetaComment,
-  decodeTranslationStart,
-  isTranslationEnd,
+  scanTranslationMarkers,
   type ScholarBridgeMeta,
-  type TranslationMeta,
 } from "../../ir/metadata";
 import type {
   AlgorithmNode,
   FigureNode,
   ScholarBlockNode,
   ScholarDocument,
-  ScholarInlineNode,
   TableCell,
   TableNode,
 } from "../../ir/nodes";
@@ -27,7 +24,8 @@ import { parseMarkdownInline } from "./inline";
 export function parseMarkdown(input: string): ScholarDocument {
   const ids = new IdAllocator();
   const { yaml, body } = stripFrontmatter(input);
-  const children = parseBlocks(body, ids);
+  const bodyStartLine = input.slice(0, input.length - body.length).split(/\r?\n/).length - 1;
+  const children = parseBlocks(body, ids, bodyStartLine);
   return makeDocument(children, yaml ? { yaml } : undefined);
 }
 
@@ -37,27 +35,45 @@ function stripFrontmatter(input: string): { yaml?: string; body: string } {
   return { yaml: m[1], body: input.slice(m[0].length) };
 }
 
-function parseBlocks(input: string, ids: IdAllocator): ScholarBlockNode[] {
+function parseBlocks(input: string, ids: IdAllocator, lineOffset?: number): ScholarBlockNode[] {
   const lines = input.split(/\r?\n/);
   const blocks: ScholarBlockNode[] = [];
-  // Active `scholarbridge:translation:start … end` collection, if any.
-  let translation: { meta: TranslationMeta; lines: string[] } | null = null;
+  const markers = new Map(scanTranslationMarkers(lines).markers.map((marker) => [marker.startLine, marker]));
   let i = 0;
+  let blockStart = 0;
 
   const push = (node: ScholarBlockNode) => {
-    if (translation) {
-      translation.lines.push(blockToPlainLines(node));
-    } else {
-      blocks.push(node);
+    if (lineOffset !== undefined) {
+      const end = Math.min(lines.length - 1, Math.max(blockStart, i - 1));
+      node.source = {
+        format: "markdown",
+        startLine: lineOffset + blockStart,
+        endLine: lineOffset + end,
+        raw: lines.slice(blockStart, end + 1).join("\n"),
+      };
     }
+    blocks.push(node);
   };
 
   while (i < lines.length) {
+    blockStart = i;
     const line = lines[i];
     const trimmed = line.trim();
 
     if (!trimmed) {
       i++;
+      continue;
+    }
+
+    const marker = markers.get(i);
+    if (marker) {
+      i = marker.endLine + 1;
+      push({
+        id: ids.next("translation-block"),
+        type: "translation-block",
+        meta: marker.meta,
+        text: lines.slice(marker.contentStartLine, marker.endLine).join("\n"),
+      });
       continue;
     }
 
@@ -90,23 +106,6 @@ function parseBlocks(input: string, ids: IdAllocator): ScholarBlockNode[] {
       i = next;
       const inner = comment.replace(/^\s*<!--/, "").replace(/-->\s*$/, "");
 
-      const startMeta = decodeTranslationStart(inner);
-      if (startMeta) {
-        translation = { meta: startMeta, lines: [] };
-        continue;
-      }
-      if (isTranslationEnd(inner)) {
-        if (translation) {
-          blocks.push({
-            id: ids.next("translation-block"),
-            type: "translation-block",
-            meta: translation.meta,
-            text: translation.lines.join("\n").trim(),
-          });
-          translation = null;
-        }
-        continue;
-      }
       const meta = decodeMetaComment(inner);
       if (meta && applyMetaToPrevious(meta, blocks)) continue;
       push({ id: ids.next("raw-html"), type: "raw-html", raw: comment, reason: meta ? "orphan scholarbridge metadata" : "html comment" });
@@ -144,8 +143,8 @@ function parseBlocks(input: string, ids: IdAllocator): ScholarBlockNode[] {
           j++;
         }
         const table = parseHtmlTable(html, ids);
-        push(table ?? { id: ids.next("raw-html"), type: "raw-html", raw: html, reason: "unparsed HTML table" });
         i = j;
+        push(table ?? { id: ids.next("raw-html"), type: "raw-html", raw: html, reason: "unparsed HTML table" });
         continue;
       }
       let html = lines[i];
@@ -154,8 +153,8 @@ function parseBlocks(input: string, ids: IdAllocator): ScholarBlockNode[] {
         html += "\n" + lines[j];
         j++;
       }
-      push({ id: ids.next("raw-html"), type: "raw-html", raw: html, reason: "html block" });
       i = j;
+      push({ id: ids.next("raw-html"), type: "raw-html", raw: html, reason: "html block" });
       continue;
     }
 
@@ -212,7 +211,27 @@ function parseBlocks(input: string, ids: IdAllocator): ScholarBlockNode[] {
 
     // Display math \[ … \]
     if (trimmed.startsWith("\\[")) {
+      const close = trimmed.indexOf("\\]", 2);
+      if (close !== -1) {
+        const latex = trimmed.slice(2, close);
+        const remainder = trimmed.slice(close + 2);
+        if (!remainder.trim()) {
+          push(makeDisplayMath(latex, ids));
+        } else {
+          push({
+            id: ids.next("paragraph"),
+            type: "paragraph",
+            children: [
+              { id: ids.inline(), type: "inline-math", latex, display: true },
+              ...parseMarkdownInline(remainder, ids),
+            ],
+          });
+        }
+        i++;
+        continue;
+      }
       const content: string[] = [trimmed.slice(2)];
+      let closed = false;
       i++;
       while (i < lines.length && !lines[i].trim().endsWith("\\]")) {
         content.push(lines[i]);
@@ -220,9 +239,14 @@ function parseBlocks(input: string, ids: IdAllocator): ScholarBlockNode[] {
       }
       if (i < lines.length) {
         content.push(lines[i].trim().slice(0, -2));
+        closed = true;
         i++;
       }
-      push(makeDisplayMath(content.join("\n"), ids));
+      if (closed) {
+        push(makeDisplayMath(content.join("\n"), ids));
+      } else {
+        push({ id: ids.next("raw-latex"), type: "raw-latex", raw: lines.slice(blockStart, i).join("\n") });
+      }
       continue;
     }
 
@@ -253,8 +277,8 @@ function parseBlocks(input: string, ids: IdAllocator): ScholarBlockNode[] {
     // Lists
     if (/^\s*([-*+]|\d+[.)])\s+/.test(line)) {
       const { node, next } = parseListBlock(lines, i, ids);
-      push(node);
       i = next;
+      push(node);
       continue;
     }
 
@@ -283,15 +307,6 @@ function parseBlocks(input: string, ids: IdAllocator): ScholarBlockNode[] {
     for (const node of makeParagraphOrFigure(para.join("\n"), ids)) push(node);
   }
 
-  // Unterminated translation block: keep the collected text (never drop).
-  if (translation) {
-    blocks.push({
-      id: ids.next("translation-block"),
-      type: "translation-block",
-      meta: translation.meta,
-      text: translation.lines.join("\n").trim(),
-    });
-  }
   return blocks;
 }
 
@@ -599,6 +614,7 @@ function readHtmlComment(lines: string[], start: number): { body: string; next: 
   let body = lines[start];
   let i = start + 1;
   while (i < lines.length && !body.includes("-->")) {
+    if (/^\s*<!--/.test(lines[i])) break;
     body += "\n" + lines[i];
     i++;
   }
@@ -644,88 +660,4 @@ function applyMetaToPrevious(meta: ScholarBridgeMeta, blocks: ScholarBlockNode[]
     }
   }
   return false;
-}
-
-/**
- * Plain-markdown rendering of a block, used to capture translated text.
- * Content-bearing node types must never render to "" — every block kind is
- * rendered recursively so nothing is silently destroyed.
- */
-function blockToPlainLines(node: ScholarBlockNode): string {
-  switch (node.type) {
-    case "paragraph":
-      return node.children.map(inlineToPlain).join("");
-    case "heading":
-      return `${"#".repeat(node.level)} ${node.children.map(inlineToPlain).join("")}`;
-    case "list":
-      return node.items
-        .map((item, idx) => {
-          const marker = node.ordered ? `${idx + (node.start ?? 1)}.` : "-";
-          return blockToPlainLines(item)
-            .split("\n")
-            .map((l, j) => (j === 0 ? `${marker} ${l}` : `  ${l}`))
-            .join("\n");
-        })
-        .join("\n");
-    case "list-item":
-      return node.children.map(blockToPlainLines).join("\n\n");
-    case "quote":
-      return node.children
-        .map(blockToPlainLines)
-        .join("\n\n")
-        .split("\n")
-        .map((l) => `> ${l}`)
-        .join("\n");
-    case "code":
-      return "```" + (node.language ?? "") + "\n" + node.code + "\n```";
-    case "math":
-      return `$$\n${node.latex}\n$$`;
-    case "table":
-      return node.rows
-        .map(
-          (row) =>
-            `| ${row.map((cell) => cell.content.map(inlineToPlain).join("")).join(" | ")} |`,
-        )
-        .join("\n");
-    case "figure":
-      return `![[${node.path}]]`;
-    case "algorithm":
-      return (
-        "```scholar-algorithm\n" +
-        node.body.map((s) => "  ".repeat(s.indent) + s.text).join("\n") +
-        "\n```"
-      );
-    case "thematic-break":
-      return "---";
-    case "raw-html":
-    case "raw-latex":
-      return node.raw;
-    case "translation-block":
-      return node.text;
-  }
-}
-
-function inlineToPlain(node: ScholarInlineNode): string {
-  switch (node.type) {
-    case "text":
-      return node.text;
-    case "inline-math":
-      return node.display ? `$$${node.latex}$$` : `$${node.latex}$`;
-    case "code-span":
-      return `\`${node.code}\``;
-    case "strong":
-      return `**${node.children.map(inlineToPlain).join("")}**`;
-    case "emph":
-      return `*${node.children.map(inlineToPlain).join("")}*`;
-    case "link":
-      return node.kind === "wikilink"
-        ? `[[${node.target}${node.alias ? "|" + node.alias : ""}]]`
-        : `[${node.alias ?? node.target}](${node.target})`;
-    case "citation":
-      return node.raw;
-    case "inline-raw":
-      return node.raw;
-    default:
-      return "";
-  }
 }

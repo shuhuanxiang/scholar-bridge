@@ -2,6 +2,7 @@ import { stat as fsStat } from "node:fs/promises";
 import { MarkdownView, Notice, type Editor } from "obsidian";
 import { t } from "../i18n";
 import type ScholarBridgePlugin from "../main";
+import { parseMarkdown } from "../core/parser/markdown/markdown-parser";
 import { hasTranslatableProse, PROMPT_VERSION, translateBlocks, glossaryVersion } from "../translation/translator";
 import { ensureTranslatorReady, makeClient } from "./translator-commands";
 import { scanFreshness } from "../translation/freshness";
@@ -99,27 +100,16 @@ function gatherParagraph(editor: Editor): SourceRange | null {
 
 function gatherSection(editor: Editor): SourceRange | null {
   const line = editor.getCursor().line;
-  let headingLine = -1;
-  let level: number | null = null;
-  for (let i = line; i >= 0; i--) {
-    const m = /^(#{1,6})\s/.exec(editor.getLine(i));
-    if (m) {
-      headingLine = i;
-      level = m[1].length;
-      break;
-    }
-  }
+  const headings = parseMarkdown(editor.getValue()).children.filter((node) => node.type === "heading");
+  const heading = headings.filter((node) => (node.source?.startLine ?? Infinity) <= line).at(-1);
+  const headingLine = heading?.source?.startLine ?? -1;
+  const level = heading?.level ?? null;
   // Body starts below the heading so replace mode never deletes the heading.
   const start = level !== null ? headingLine + 1 : 0;
   let end = editor.lineCount() - 1;
   if (level !== null) {
-    for (let i = start; i <= editor.lineCount() - 1; i++) {
-      const m = /^(#{1,6})\s/.exec(editor.getLine(i));
-      if (m && m[1].length <= level) {
-        end = i - 1;
-        break;
-      }
-    }
+    const next = headings.find((node) => (node.source?.startLine ?? -1) >= start && node.level <= level);
+    if (next) end = next.source!.startLine! - 1;
   }
   while (end >= start && !editor.getLine(end).trim()) end--;
   if (start > end) return null;
@@ -171,33 +161,23 @@ function configuredTemperature(plugin: ScholarBridgePlugin): number {
 }
 
 /**
- * Split a gathered range into blank-line-delimited paragraphs, each with its
- * own exact line range. Multi-paragraph selections are translated (and later
- * reinserted) one paragraph at a time: a single multi-paragraph block makes
- * the model emit multi-line JSON string values, whose unescaped newlines
- * reliably break parsing — the reported "2+ paragraphs always fail" mode.
+ * Use full-document syntax context so partial selections inside code, math,
+ * metadata and stored translations cannot masquerade as prose.
  */
 function splitParagraphs(editor: Editor, range: SourceRange): SourceRange[] {
   const parts: SourceRange[] = [];
-  let start = range.startLine;
-  const makePart = (from: number, to: number): void => {
-    const raw = editor.getRange({ line: from, ch: 0 }, { line: to, ch: editor.getLine(to).length });
-    if (raw.trim()) parts.push({ raw, startLine: from, endLine: to });
-  };
-  for (let line = range.startLine; line <= range.endLine; line++) {
-    if (editor.getLine(line).trim()) continue;
-    if (start < line) makePart(start, line - 1);
-    start = line + 1;
+  for (const node of parseMarkdown(editor.getValue()).children) {
+    if (node.type !== "paragraph" || node.source?.startLine === undefined || node.source.endLine === undefined) continue;
+    const startLine = Math.max(range.startLine, node.source.startLine);
+    const endLine = Math.min(range.endLine, node.source.endLine);
+    if (startLine > endLine) continue;
+    const raw = editor.getRange(
+      { line: startLine, ch: 0 },
+      { line: endLine, ch: editor.getLine(endLine).length },
+    );
+    if (hasTranslatableProse(raw)) parts.push({ raw, startLine, endLine });
   }
-  if (start <= range.endLine) makePart(start, range.endLine);
   return parts;
-}
-
-/** Paragraphs worth sending: prose-only — headings and code fences stay untouched. */
-function isTranslatablePart(part: SourceRange): boolean {
-  const first = part.raw.trimStart();
-  if (/^#{1,6}\s/.test(first) || /^```/.test(first)) return false;
-  return hasTranslatableProse(part.raw);
 }
 
 async function translateTarget(
@@ -210,19 +190,20 @@ async function translateTarget(
     new Notice(t("ScholarBridge: nothing to translate at the cursor."));
     return;
   }
-  const parts = splitParagraphs(editor, range).filter(isTranslatablePart);
+  const parts = splitParagraphs(editor, range);
   if (parts.length === 0) {
     new Notice(t("ScholarBridge: selection contains no translatable prose."));
     return;
   }
 
   try {
+    const settings = structuredClone(plugin.settings);
     if (!(await ensureTranslatorReady(plugin))) {
       new Notice(translatorNotReadyMessage(plugin));
       return;
     }
     const nodeIdOf = (part: SourceRange): string =>
-      `p_${Math.abs(hashString(part.raw)).toString(16).slice(0, 8)}`;
+      `p_${part.startLine}_${Math.abs(hashString(part.raw)).toString(16).slice(0, 8)}`;
     const blocks = parts.map((part) => ({
       nodeId: nodeIdOf(part),
       type: "paragraph" as const,
@@ -232,11 +213,12 @@ async function translateTarget(
       makeClient(plugin),
       blocks,
       {
-        sourceLanguage: plugin.settings.sourceLanguage,
-        targetLanguage: plugin.settings.targetLanguage,
-        style: plugin.settings.translationStyle,
-        glossary: plugin.settings.glossary,
-        temperature: configuredTemperature(plugin),
+        sourceLanguage: settings.sourceLanguage,
+        targetLanguage: settings.targetLanguage,
+        style: settings.translationStyle,
+        glossary: settings.glossary,
+        temperature: settings.llama.temperature,
+        contextSize: settings.llama.contextSize,
         ...(await cacheOptions(plugin)),
       },
     );
@@ -245,35 +227,35 @@ async function translateTarget(
     for (const part of parts) {
       const nodeId = nodeIdOf(part);
       const result = byId.get(nodeId);
-      if (!result) continue; // failed after per-block fallback: report below
       items.push({
         input: {
           nodeId,
-          translation: result.translation,
+          translation: result?.translation ?? "",
           range: part,
           // Apply-time guard: the target lines must still hold this exact source.
           verifyRaw: part.raw,
           meta: {
-            sourceLanguage: plugin.settings.sourceLanguage,
-            targetLanguage: plugin.settings.targetLanguage,
+            sourceLanguage: settings.sourceLanguage,
+            targetLanguage: settings.targetLanguage,
             model,
-            glossaryVersion: result.glossaryVersion ?? glossaryVersion(plugin.settings.glossary),
+            glossaryVersion: result?.glossaryVersion ?? glossaryVersion(settings.glossary),
             promptVersion: PROMPT_VERSION,
           },
         },
-        included: true,
+        included: Boolean(result),
         edited: false,
+        failed: !result,
       });
     }
-    if (items.length === 0) {
+    if (items.every((item) => item.failed)) {
       const detail = problems?.join("; ") ?? "";
       throw new Error(detail || "no paragraphs were translated");
     }
-    if (items.length < parts.length) {
-      const failed = parts.length - items.length;
+    const failed = items.filter((item) => item.failed).length;
+    if (failed > 0) {
       new Notice(t("ScholarBridge: {{n}} paragraph(s) could not be translated — retry them from the preview.", { n: failed }));
     }
-    await showPreview(plugin, items, plugin.settings.writeMode, filePath);
+    await showPreview(plugin, items, settings.writeMode, filePath);
   } catch (err) {
     new Notice(t("ScholarBridge: translation failed — {{msg}}", { msg: err instanceof Error ? err.message : String(err) }));
   }
@@ -327,15 +309,17 @@ async function retryItem(
   if (!job || !item) return;
   view.setRetrying(index, true);
   try {
-    const { blocks } = await translateBlocks(
+    if (!(await ensureTranslatorReady(plugin))) throw new Error(translatorNotReadyMessage(plugin));
+    const { blocks, model } = await translateBlocks(
       makeClient(plugin),
       [{ nodeId: item.input.nodeId, type: "paragraph", sourceText: item.input.range.raw.trim() }],
       {
-        sourceLanguage: plugin.settings.sourceLanguage,
-        targetLanguage: plugin.settings.targetLanguage,
+        sourceLanguage: item.input.meta.sourceLanguage,
+        targetLanguage: item.input.meta.targetLanguage,
         style: plugin.settings.translationStyle,
         glossary: plugin.settings.glossary,
         temperature: configuredTemperature(plugin),
+        contextSize: plugin.settings.llama.contextSize,
       },
     );
     // The job may have been discarded, applied or replaced while the request
@@ -346,7 +330,12 @@ async function retryItem(
     if (job.items[index] !== item) return;
     if (blocks[0]) {
       item.input.translation = blocks[0].translation;
+      if (item.failed) item.included = true;
+      item.failed = false;
       item.edited = false;
+      item.input.meta.model = model;
+      item.input.meta.glossaryVersion = blocks[0].glossaryVersion;
+      item.input.meta.promptVersion = PROMPT_VERSION;
       live.setJob({
         mode: job.mode,
         writeMode: job.writeMode,
@@ -393,7 +382,11 @@ async function translateChangedBlocks(
   const docText = editor.getValue();
   const docLines = docText.split("\n");
   const report = scanFreshness(docText);
+  if (report.invalidStartLines.length > 0) {
+    new Notice(t("ScholarBridge: skipped {{n}} damaged translation block(s).", { n: report.invalidStartLines.length }));
+  }
   if (report.entries.length === 0) {
+    if (report.invalidStartLines.length > 0) return;
     new Notice(t("ScholarBridge: this note has no stored translations."));
     return;
   }
@@ -437,6 +430,7 @@ async function translateChangedBlocks(
         style: plugin.settings.translationStyle,
         glossary: plugin.settings.glossary,
         temperature: configuredTemperature(plugin),
+        contextSize: plugin.settings.llama.contextSize,
         ...(await cacheOptions(plugin)),
       });
       model = model || groupModel;
@@ -458,6 +452,12 @@ async function translateChangedBlocks(
         verifyRaw: docLines
           .slice(entry.translationStartLine, entry.translationEndLine + 1)
           .join("\n"),
+        verifySource: {
+          raw: docLines.slice(entry.sourceStartLine, entry.sourceEndLine + 1).join("\n"),
+          startLine: entry.sourceStartLine,
+          endLine: entry.sourceEndLine,
+        },
+        writeMode: entry.meta.writeMode ?? "insert-below",
         meta: {
           sourceLanguage: entry.meta.sourceLanguage,
           targetLanguage: entry.meta.targetLanguage,
@@ -466,7 +466,8 @@ async function translateChangedBlocks(
           promptVersion: PROMPT_VERSION,
         },
       };
-      return { input, included: true, edited: false };
+      const failed = !translated?.translation.trim();
+      return { input, included: !failed, edited: false, failed };
     });
     // Same failure report as translateTarget: blocks dropped by the per-block
     // fallback reach the preview with an empty translation — point at Retry.

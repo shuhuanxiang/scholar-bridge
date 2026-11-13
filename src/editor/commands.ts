@@ -17,21 +17,36 @@ export function registerEditorFeatures(plugin: ScholarBridgePlugin): void {
   plugin.registerEvent(
     plugin.app.workspace.on(
       "editor-paste",
-      (evt: ClipboardEvent, editor: Editor) => {
+      (evt: ClipboardEvent, editor: Editor, info) => {
         if (plugin.settings.pasteMode === "never") return;
         if (evt.defaultPrevented) return;
         const text = evt.clipboardData?.getData("text/plain") ?? "";
         if (!text || !looksLikeLatex(text)) return;
 
+        const snapshot = editor.getValue();
+        const filePath = info?.file?.path;
+        const selection = editor.listSelections()[0];
+        const anchor = selection?.anchor ?? editor.getCursor();
+        const head = selection?.head ?? anchor;
+        const forward = anchor.line < head.line || (anchor.line === head.line && anchor.ch <= head.ch);
+        const from = forward ? anchor : head;
+        const to = forward ? head : anchor;
+        const insert = (value: string): void => {
+          if (editor.getValue() !== snapshot || (filePath && info?.file?.path !== filePath)) {
+            new Notice(t("ScholarBridge: the note changed while the paste dialog was open. Paste again."));
+            return;
+          }
+          editor.transaction({ changes: [{ from, to, text: value }] });
+        };
         evt.preventDefault();
         const converted = convertLatexFragment(text);
         if (converted === null) {
           // Low confidence: never destroy the pasted source.
-          editor.replaceSelection(text);
+          insert(text);
           return;
         }
         if (plugin.settings.pasteMode === "auto") {
-          insertAsOneTransaction(editor, converted);
+          insert(converted);
           new Notice(t("ScholarBridge: converted pasted LaTeX."));
           return;
         }
@@ -39,7 +54,8 @@ export function registerEditorFeatures(plugin: ScholarBridgePlugin): void {
           title: t("LaTeX detected"),
           message: t("Convert the pasted LaTeX to Obsidian Markdown?"),
           confirmText: t("Convert"),
-          onConfirm: () => insertAsOneTransaction(editor, converted),
+          onConfirm: () => insert(converted),
+          onCancel: () => insert(text),
         }).open();
       },
     ),

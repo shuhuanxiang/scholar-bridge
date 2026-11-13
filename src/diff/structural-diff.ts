@@ -170,8 +170,13 @@ function diffBlockPair(oldNode: ScholarBlockNode, newNode: ScholarBlockNode, opt
     }
     case "table": {
       const result = diffTables(oldNode, newNode as typeof oldNode, opts);
+      const comparableCaption = (caption = "") => {
+        const text = opts.ignoreWhitespace ? normalizeWhitespace(caption) : caption;
+        return opts.caseSensitive ? text : text.toLowerCase();
+      };
+      const captionChanged = comparableCaption(oldNode.caption) !== comparableCaption((newNode as typeof oldNode).caption);
       return {
-        status: result.hasChanges ? "changed" : "equal",
+        status: result.hasChanges || captionChanged ? "changed" : "equal",
         type: "table",
         oldNode,
         newNode,

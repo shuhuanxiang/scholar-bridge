@@ -707,6 +707,14 @@ function resolveSpans(rows: TableCell[][]): TableCell[][] {
     const placed: TableCell[] = [];
     let col = 0;
     for (const cell of row) {
+      const continuation = (pending[col] ?? 0) > 0 &&
+        cell.content.length === 0 && (cell.rowSpan ?? 1) === 1 && (cell.colSpan ?? 1) === 1;
+      if (continuation) {
+        placed.push({ content: [], rowSpanContinue: true });
+        pending[col] -= 1;
+        col++;
+        continue;
+      }
       while ((pending[col] ?? 0) > 0) {
         placed.push({ content: [], rowSpanContinue: true });
         pending[col] -= 1;

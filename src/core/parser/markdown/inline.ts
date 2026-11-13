@@ -1,5 +1,25 @@
 import { IdAllocator, inline } from "../../ir/document";
 import type { ScholarInlineNode } from "../../ir/nodes";
+import { decodeInlineLatex } from "../../ir/metadata";
+
+/** Match a complete code span with an exact-length closing backtick run. */
+export function readCodeSpan(input: string, start: number): { code: string; end: number } | null {
+  if (input[start] !== "`") return null;
+  const ticks = /^`+/.exec(input.slice(start))![0];
+  let cursor = start + ticks.length;
+  while (cursor < input.length) {
+    const close = input.indexOf("`", cursor);
+    if (close === -1) return null;
+    const run = /^`+/.exec(input.slice(close))![0];
+    if (run.length === ticks.length) {
+      let code = input.slice(start + ticks.length, close);
+      if (code.startsWith(" ") && code.endsWith(" ") && code.trim()) code = code.slice(1, -1);
+      return { code, end: close + ticks.length };
+    }
+    cursor = close + run.length;
+  }
+  return null;
+}
 
 /**
  * Inline Markdown (incl. Obsidian constructs) → inline IR nodes.
@@ -68,16 +88,23 @@ export function parseMarkdownInline(
 
     // Code spans (`` ` `` with possible multi-backtick delimiters)
     if (ch === "`") {
-      const ticks = /^`+/.exec(input.slice(i))![0];
-      const close = input.indexOf(ticks, i + ticks.length);
-      if (close !== -1) {
-        const code = input.slice(i + ticks.length, close);
-        push(inline.codeSpan(code));
-        i = close + ticks.length;
+      const span = readCodeSpan(input, i);
+      if (span) {
+        const annotation = /^<!-- scholarbridge:inline-latex [\s\S]*? -->/.exec(input.slice(span.end));
+        const meta = annotation ? decodeInlineLatex(annotation[0]) : null;
+        if (meta && meta.raw === span.code) {
+          push(meta.keys
+            ? inline.citation(meta.raw, meta.keys)
+            : { id: ids.inline(), type: "inline-raw", raw: meta.raw });
+        } else {
+          push(inline.codeSpan(span.code));
+        }
+        i = span.end + (meta ? annotation![0].length : 0);
         continue;
       }
-      text += ch;
-      i++;
+      const unmatched = /^`+/.exec(input.slice(i))![0];
+      text += unmatched;
+      i += unmatched.length;
       continue;
     }
 

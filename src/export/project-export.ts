@@ -1,5 +1,6 @@
 import { TFile, TFolder, normalizePath, type App } from "obsidian";
 import { parseMarkdown } from "../core/parser/markdown/markdown-parser";
+import { prepareExportAssets } from "./assets";
 import { writeLatexFragment, detectPackages } from "../core/writer/latex/latex-writer";
 import {
   buildMainTex,
@@ -63,7 +64,7 @@ export async function exportFolderToLatex(
 
   const packages = new Set<string>();
   for (let i = 0; i < mdFiles.length; i++) {
-    const doc = parseMarkdown(await app.vault.read(mdFiles[i]));
+    const doc = prepareExportAssets(app, parseMarkdown(await app.vault.read(mdFiles[i])), mdFiles[i], plan.outDir);
     for (const pkg of detectPackages(doc)) packages.add(pkg);
     const tex = writeLatexFragment(doc);
     await writeFile(app, normalizePath(plan.sectionFiles[i]), tex);

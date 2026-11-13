@@ -3,6 +3,7 @@ import { t } from "../i18n";
 import type ScholarBridgePlugin from "../main";
 import { diffDocuments, type DocumentDiff, type BlockDiff, type InlineChange } from "../diff/structural-diff";
 import { applyAcceptedChanges } from "../diff/diff-apply";
+import { blockComparableText } from "../diff/node-text";
 
 export const DIFF_VIEW_TYPE = "scholar-bridge-diff-view";
 
@@ -236,28 +237,12 @@ export class DiffView extends ItemView {
 
   private plainOf(node: BlockDiff["oldNode"]): string {
     if (!node) return "";
-    switch (node.type) {
-      case "paragraph":
-      case "heading":
-        return node.children.map((c) => (c.type === "text" ? c.text : c.type === "inline-math" ? `$${c.latex}$` : c.type === "code-span" ? c.code : "")).join("");
-      case "math":
-        return node.latex;
-      case "code":
-        return node.code;
-      case "table":
-        return node.rows.map((r) => r.map((c) => c.content.map((n) => (n.type === "text" ? n.text : "")).join("")).join(" | ")).join("\n");
-      case "figure":
-        return `![[${node.path}]]`;
-      case "algorithm":
-        return node.body.map((s) => s.text).join("\n");
-      case "raw-latex":
-      case "raw-html":
-        return node.raw;
-      case "translation-block":
-        return node.text;
-      default:
-        return "";
-    }
+    return blockComparableText(node, {
+      ignoreWhitespace: false,
+      ignoreWrappers: false,
+      ignoreCitations: false,
+      caseSensitive: true,
+    });
   }
 }
 

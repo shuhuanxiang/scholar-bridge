@@ -43,6 +43,8 @@ export interface TranslationMeta {
   promptVersion: string;
   status: "fresh" | "stale" | "pending";
   translatedAt?: string;
+  writeMode?: "insert-below" | "replace" | "translated-copy" | "bilingual";
+  sourceLineCount?: number;
 }
 
 /** Deterministic JSON: object keys sorted recursively, arrays kept in order. */
@@ -64,7 +66,7 @@ function sortValue(value: unknown): unknown {
 }
 
 export function encodeMetaComment(meta: Record<string, unknown>): string {
-  const payload = stableStringify({ schemaVersion: SCHEMA_VERSION, ...meta });
+  const payload = commentPayload({ schemaVersion: SCHEMA_VERSION, ...meta });
   return `<!-- ${META_PREFIX}\n${payload}\n-->`;
 }
 
@@ -92,7 +94,7 @@ export function decodeMetaComment(commentBody: string): ScholarBridgeMeta | null
 }
 
 export function encodeTranslationStart(meta: TranslationMeta): string {
-  return `<!-- ${TRANSLATION_START}\n${stableStringify(meta)}\n-->`;
+  return `<!-- ${TRANSLATION_START}\n${commentPayload(meta)}\n-->`;
 }
 
 export function encodeTranslationEnd(): string {
@@ -106,7 +108,15 @@ export function decodeTranslationStart(commentBody: string): TranslationMeta | n
   if (!json.startsWith("{")) return null;
   try {
     const parsed = JSON.parse(json) as TranslationMeta;
-    if (typeof parsed.sourceNodeId !== "string") return null;
+    if (!parsed || typeof parsed !== "object") return null;
+    for (const key of [
+      "sourceNodeId", "sourceLanguage", "targetLanguage", "sourceHash",
+      "model", "glossaryVersion", "promptVersion",
+    ] as const) {
+      if (typeof parsed[key] !== "string") return null;
+    }
+    if (typeof parsed.schemaVersion !== "number") return null;
+    if (!["fresh", "stale", "pending"].includes(parsed.status)) return null;
     return parsed;
   } catch {
     return null;
@@ -115,4 +125,87 @@ export function decodeTranslationStart(commentBody: string): TranslationMeta | n
 
 export function isTranslationEnd(commentBody: string): boolean {
   return commentBody.trim() === TRANSLATION_END;
+}
+
+export function encodeInlineLatex(raw: string, keys?: string[]): string {
+  const payload = commentPayload({ raw, ...(keys ? { keys } : {}) });
+  return `<!-- scholarbridge:inline-latex ${payload} -->`;
+}
+
+function commentPayload(value: unknown): string {
+  return stableStringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+}
+
+export function decodeInlineLatex(comment: string): { raw: string; keys?: string[] } | null {
+  const match = /^<!-- scholarbridge:inline-latex ([\s\S]+) -->$/.exec(comment);
+  if (!match) return null;
+  try {
+    const value = JSON.parse(match[1]) as { raw?: unknown; keys?: unknown };
+    if (typeof value.raw !== "string") return null;
+    if (value.keys !== undefined && (!Array.isArray(value.keys) || !value.keys.every((key) => typeof key === "string"))) return null;
+    return { raw: value.raw, ...(value.keys ? { keys: value.keys as string[] } : {}) };
+  } catch {
+    return null;
+  }
+}
+
+export interface TranslationMarker {
+  startLine: number;
+  contentStartLine: number;
+  endLine: number;
+  meta: TranslationMeta;
+}
+
+/** Only complete, unnested marker pairs outside code fences are writable. */
+export function scanTranslationMarkers(lines: string[]): {
+  markers: TranslationMarker[];
+  invalidStartLines: number[];
+} {
+  const markers: TranslationMarker[] = [];
+  const invalidStartLines: number[] = [];
+  const isStart = (line: string): boolean =>
+    /^<!--\s*scholarbridge:translation:start(?:\s|$)/.test(line.trim());
+  const isEnd = (line: string): boolean =>
+    /^<!--\s*scholarbridge:translation:end\s*-->$/.test(line.trim());
+  let fence: { char: string; length: number } | null = null;
+  const updateFence = (line: string): boolean => {
+    const trimmed = line.trim();
+    if (fence) {
+      if (new RegExp(`^${fence.char}{${fence.length},}$`).test(trimmed)) fence = null;
+      return true;
+    }
+    const match = /^(`{3,}|~{3,})(.*)$/.exec(trimmed);
+    if (!match || (match[1][0] === "`" && match[2].includes("`"))) return false;
+    fence = { char: match[1][0], length: match[1].length };
+    return true;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    if (updateFence(lines[i]) || !isStart(lines[i])) continue;
+    let comment = lines[i];
+    let tail = i;
+    while (!comment.includes("-->") && tail + 1 < lines.length && !isStart(lines[tail + 1])) {
+      comment += "\n" + lines[++tail];
+    }
+    const meta = comment.includes("-->")
+      ? decodeTranslationStart(comment.replace(/^\s*<!--/, "").replace(/-->\s*$/, ""))
+      : null;
+    if (!meta) {
+      invalidStartLines.push(i);
+      continue;
+    }
+    let end = tail + 1;
+    for (; end < lines.length; end++) {
+      if (updateFence(lines[end])) continue;
+      if (isStart(lines[end]) || isEnd(lines[end])) break;
+    }
+    if (end >= lines.length || !isEnd(lines[end])) {
+      invalidStartLines.push(i);
+      fence = null;
+      continue;
+    }
+    markers.push({ startLine: i, contentStartLine: tail + 1, endLine: end, meta });
+    i = end;
+  }
+  return { markers, invalidStartLines };
 }

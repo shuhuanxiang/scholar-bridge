@@ -1,3 +1,5 @@
+import { readCodeSpan } from "../core/parser/markdown/inline";
+
 /**
  * Translation placeholder protection (TECHNICAL_DESIGN.md §11).
  *
@@ -57,7 +59,7 @@ const RULES: Rule[] = [
   // stays prose).
   { kind: "MATH", re: /\$(?!\s)(?:\\.|[^$\\\n])+?(?<!\s)\$(?!\d)/g },
   { kind: "MATH", re: /\\\([\s\S]+?\\\)/g },
-  { kind: "CODE", re: /`[^`\n]+`/g },
+  { kind: "MATH", re: /\\\[[\s\S]+?\\\]/g },
   { kind: "LINK", re: /\[\[[^\]\n]+\]\]/g },
   { kind: "LINK", re: /\[[^\]\n]+\]\([^)\n]+\)/g },
   { kind: "LINK", re: /https?:\/\/[^\s)]+/g },
@@ -94,6 +96,17 @@ export function protectBlock(text: string, opts: ProtectOptions = {}): Protectio
   const overlaps = (start: number, end: number): boolean =>
     spans.some((s) => start < s.end && end > s.start);
 
+  const candidates: { kind: ProtectedKind; start: number; end: number }[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "`") continue;
+    const span = readCodeSpan(text, i);
+    if (!span) {
+      i += /^`+/.exec(text.slice(i))![0].length - 1;
+      continue;
+    }
+    candidates.push({ kind: "CODE", start: i, end: span.end });
+    i = span.end - 1;
+  }
   for (const rule of RULES) {
     rule.re.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -102,13 +115,18 @@ export function protectBlock(text: string, opts: ProtectOptions = {}): Protectio
         rule.re.lastIndex++;
         continue;
       }
-      const start = m.index;
-      const end = start + m[0].length;
-      if (overlaps(start, end)) continue;
-      const token = makeToken(rule.kind, m[0]);
-      placeholders.push({ token, kind: rule.kind, value: m[0], expectedCount: 1 });
-      spans.push({ start, end, replacement: token });
+      candidates.push({ kind: rule.kind, start: m.index, end: m.index + m[0].length });
     }
+  }
+  // Enclosing spans win over their contents, independent of rule order.
+  let lastEnd = -1;
+  for (const candidate of candidates.sort((a, b) => a.start - b.start || b.end - a.end)) {
+    if (candidate.start < lastEnd) continue;
+    const value = text.slice(candidate.start, candidate.end);
+    const token = makeToken(candidate.kind, value);
+    placeholders.push({ token, kind: candidate.kind, value, expectedCount: 1 });
+    spans.push({ start: candidate.start, end: candidate.end, replacement: token });
+    lastEnd = candidate.end;
   }
 
   const preserveTerms = Object.entries(opts.glossary ?? {})

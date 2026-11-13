@@ -21,6 +21,7 @@ export interface TranslationRequest {
   targetLanguage: string;
   style: string;
   temperature?: number;
+  glossary?: Record<string, string>;
 }
 
 export interface TranslationResultBlock {

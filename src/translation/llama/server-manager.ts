@@ -77,6 +77,14 @@ export class LlamaServerManager {
     return this.statusValue;
   }
 
+  matchesConfig(cfg: ServerManagerConfig): boolean {
+    const keys: (keyof ServerManagerConfig)[] = [
+      "executablePath", "modelPath", "host", "port", "gpuLayers",
+      "contextSize", "idleTimeoutMs", "waitTimeoutMs",
+    ];
+    return keys.every((key) => this.cfg[key] === cfg[key]);
+  }
+
   lastErrorMessage(): string | null {
     return this.lastError;
   }

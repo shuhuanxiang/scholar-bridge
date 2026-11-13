@@ -76,6 +76,7 @@ export function applyAcceptedChanges(
   blocks: BlockDiff[],
   accepted: Set<number>,
 ): DiffApplyResult {
+  if (accepted.size === 0) return { text: oldText, applied: [], skipped: [] };
   const { text, applied, skipped } = applyAcceptedChangesToLines(
     oldText.split("\n"),
     blocks,
@@ -90,6 +91,7 @@ export function applyAcceptedChangesToLines(
   blocks: BlockDiff[],
   accepted: Set<number>,
 ): DiffApplyResult {
+  if (accepted.size === 0) return { text: lines.join("\n"), applied: [], skipped: [] };
   // Index of every non-empty line, in order — the matching substrate.
   const nonEmpty: { line: number; text: string }[] = [];
   for (let i = 0; i < lines.length; i++) {
@@ -161,7 +163,8 @@ export function applyAcceptedChangesToLines(
   let pendingAdds: LocatedBlock[] = [];
 
   const emitAdd = (add: LocatedBlock): void => {
-    if (accepted.has(add.index)) applied.push(add.index);
+    if (!accepted.has(add.index)) return;
+    applied.push(add.index);
     if (add.newLines.length === 0) return;
     // Blank-line separation from whatever precedes (the gap copy or a
     // previously emitted add).
@@ -185,8 +188,10 @@ export function applyAcceptedChangesToLines(
       // Copy the untouched gap in front of this block, then any adds queued
       // for that gap, then the block itself.
       for (let i = copyFrom; i < rStart; i++) out.push(lines[i]);
+      const hasAdds = pendingAdds.some((add) => accepted.has(add.index) && add.newLines.length > 0);
       for (const add of pendingAdds) emitAdd(add);
       pendingAdds = [];
+      if (hasAdds && !isDelete && out.length > 0 && out[out.length - 1].trim()) out.push("");
 
       if (accepted.has(lb.index) && lb.block.status === "changed") {
         out.push(...lb.newLines);

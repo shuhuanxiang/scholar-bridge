@@ -20,7 +20,7 @@ import {
  * note (TEST_PLAN §10–§11).
  */
 
-export const PROMPT_VERSION = "v1";
+export const PROMPT_VERSION = "v2";
 
 export interface TranslatableBlock {
   nodeId: string;
@@ -61,6 +61,7 @@ export interface TranslateBlocksOptions {
   glossaryVersion?: string;
   temperature?: number;
   signal?: AbortSignal;
+  contextSize?: number;
   /**
    * Overrides the per-request source-character budget used to split the
    * batch into sequential provider requests (tests force small budgets).
@@ -107,6 +108,8 @@ interface PreparedBlock {
   block: TranslatableBlock;
   protection: ProtectionResult;
   relevant: Record<string, string>;
+  parentId: string;
+  separator: string;
 }
 
 /** Translate a batch of blocks; throws before returning anything if a chunk
@@ -159,15 +162,42 @@ export async function translateBlocks(
     }
   }
 
-  const prepared = pending.map((b) => {
+  const contextBudget = opts.contextSize
+    ? Math.min(DEFAULT_CHUNK_CHAR_BUDGET, Math.max(128, (opts.contextSize - 768) / 4))
+    : DEFAULT_CHUNK_CHAR_BUDGET;
+  const budget = Math.max(1, Math.floor(opts.chunkCharBudget ?? contextBudget));
+  const usedIds = new Set(blocks.map((block) => block.nodeId));
+  const prepared = pending.flatMap((b): PreparedBlock[] => {
     const protection = protectBlock(b.sourceText, { glossary });
     const relevant = relevantGlossary(b.sourceText, glossary, { placeholders: protection.placeholders });
-    return { block: b, protection, relevant };
+    const pieces = splitProtectedText(protection.protectedText, budget, opts.targetLanguage);
+    return pieces.map((piece, index) => {
+      let nodeId = b.nodeId;
+      if (pieces.length > 1) {
+        nodeId = `${b.nodeId}__part_${index + 1}`;
+        while (usedIds.has(nodeId)) nodeId += "_";
+        usedIds.add(nodeId);
+      }
+      const placeholders = protection.placeholders.flatMap((placeholder) => {
+        const count = piece.text.split(placeholder.token).length - 1;
+        return count ? [{ ...placeholder, expectedCount: count }] : [];
+      });
+      return {
+        block: {
+          ...b,
+          nodeId,
+          sourceText: restorePlaceholders(piece.text, placeholders),
+        },
+        protection: { protectedText: piece.text, placeholders },
+        relevant,
+        parentId: b.nodeId,
+        separator: piece.separator,
+      };
+    });
   });
 
   // Greedy sequential chunking bounded by protected source characters keeps
   // request count minimal while bounding context use per request.
-  const budget = Math.max(1, opts.chunkCharBudget ?? DEFAULT_CHUNK_CHAR_BUDGET);
   const chunks: PreparedBlock[][] = [];
   let current: PreparedBlock[] = [];
   let size = 0;
@@ -188,30 +218,15 @@ export async function translateBlocks(
   let model = "none";
   let cacheDirty = false;
   const runChunk = async (chunk: PreparedBlock[]): Promise<void> => {
-    const res = await translateOneChunk(provider, chunk, glossary, opts, resolvedGlossaryVersion);
+    const res = await translateOneChunk(provider, chunk, opts, resolvedGlossaryVersion);
     blocksOut.push(...res.blocks);
     model = res.model;
-    if (opts.cache && res.stored) {
-      for (const b of res.blocks) {
-        const key = cacheKey({
-          sourceText: b.sourceText,
-          sourceLanguage: opts.sourceLanguage,
-          targetLanguage: opts.targetLanguage,
-          style: opts.style,
-          temperature: opts.temperature,
-          modelIdentity: opts.modelIdentity ?? "",
-          promptVersion: PROMPT_VERSION,
-          glossaryVersion: resolvedGlossaryVersion,
-        });
-        opts.cache.put(key, b.translation);
-      }
-      cacheDirty = true;
-    }
   };
   for (const chunk of chunks) {
     try {
       await runChunk(chunk);
     } catch (err) {
+      if (opts.signal?.aborted) throw err;
       if (chunk.length > 1 && err instanceof TranslationValidationError) {
         // Multi-block batches hinge on the model echoing one JSON entry per
         // block id; as the batch grows, small translation models drop or
@@ -223,6 +238,7 @@ export async function translateBlocks(
           try {
             await runChunk([p]);
           } catch (blockErr) {
+            if (opts.signal?.aborted) throw blockErr;
             const message = blockErr instanceof Error ? blockErr.message : String(blockErr);
             problems.push(`blocks ${p.block.nodeId}: ${message}`);
           }
@@ -234,28 +250,58 @@ export async function translateBlocks(
       problems.push(`blocks ${chunk.map((p) => p.block.nodeId).join(", ")}: ${message}`);
     }
   }
+  const byId = new Map(blocksOut.map((block) => [block.nodeId, block]));
+  const piecesByParent = new Map<string, PreparedBlock[]>();
+  for (const piece of prepared) {
+    const siblings = piecesByParent.get(piece.parentId) ?? [];
+    siblings.push(piece);
+    piecesByParent.set(piece.parentId, siblings);
+  }
+  const translated = new Map(cached);
+  for (const original of pending) {
+    const pieces = piecesByParent.get(original.nodeId) ?? [];
+    if (pieces.some((piece) => !byId.has(piece.block.nodeId))) continue;
+    const translation = pieces.map((piece) => byId.get(piece.block.nodeId)!.translation + piece.separator).join("").trim();
+    if (!translation) continue;
+    translated.set(original.nodeId, {
+      nodeId: original.nodeId,
+      sourceText: original.sourceText,
+      translation,
+      glossaryVersion: resolvedGlossaryVersion,
+    });
+    if (opts.cache) {
+      opts.cache.put(cacheKey({
+        sourceText: original.sourceText,
+        sourceLanguage: opts.sourceLanguage,
+        targetLanguage: opts.targetLanguage,
+        style: opts.style,
+        temperature: opts.temperature,
+        modelIdentity: opts.modelIdentity ?? "",
+        promptVersion: PROMPT_VERSION,
+        glossaryVersion: resolvedGlossaryVersion,
+      }), translation);
+      cacheDirty = true;
+    }
+  }
   if (cacheDirty) opts.onCacheDirty?.();
-  const all = [...cached.values(), ...blocksOut].sort(
-    (a, b) => blocks.findIndex((b0) => b0.nodeId === a.nodeId) - blocks.findIndex((b0) => b0.nodeId === b.nodeId),
-  );
+  const all = blocks.flatMap((block) => translated.has(block.nodeId) ? [translated.get(block.nodeId)!] : []);
   return problems.length > 0 ? { blocks: all, model, problems } : { blocks: all, model };
 }
 
-/** Validate and translate one chunk (the pre-chunking whole-batch logic).
- *  `stored: true` marks provider-translated output eligible for the cache. */
+/** Validate every returned block before its result can reach the preview/cache. */
 async function translateOneChunk(
   provider: TranslationProvider,
   prepared: PreparedBlock[],
-  glossary: Record<string, string>,
   opts: TranslateBlocksOptions & { sourceLanguage: string; targetLanguage: string; style: string },
   resolvedGlossaryVersion: string,
-): Promise<{ blocks: TranslatedBlock[]; model: string; stored: boolean }> {
+): Promise<{ blocks: TranslatedBlock[]; model: string }> {
   const request: TranslationRequest = {
     blocks: prepared.map((p) => ({ id: p.block.nodeId, text: p.protection.protectedText })),
     sourceLanguage: opts.sourceLanguage,
     targetLanguage: opts.targetLanguage,
     style: opts.style,
     temperature: opts.temperature,
+    glossary: Object.fromEntries(prepared.flatMap((piece) => Object.entries(piece.relevant))),
   };
 
   const result = await provider.translate(request, opts.signal);
@@ -292,7 +338,35 @@ async function translateOneChunk(
       glossaryVersion: resolvedGlossaryVersion,
     };
   });
-  return { blocks: blocksOut, model: result.model, stored: true };
+  return { blocks: blocksOut, model: result.model };
+}
+
+/** Split only between complete tokens; each parent is returned all-or-nothing. */
+function splitProtectedText(text: string, budget: number, targetLanguage: string): { text: string; separator: string }[] {
+  const pieces: { text: string; separator: string }[] = [];
+  let start = 0;
+  const tokens = [...text.matchAll(/⟦[A-Z]+_\d{3,}⟧/g)];
+  while (start < text.length) {
+    let end = Math.min(text.length, start + budget);
+    const token = tokens.find((match) => match.index < end && match.index + match[0].length > end);
+    if (token) end = token.index > start ? token.index : token.index + token[0].length;
+    if (end < text.length && end > start && /[\uD800-\uDBFF]/.test(text[end - 1])) {
+      end += end - start === 1 ? 1 : -1;
+    }
+    if (end < text.length) {
+      const candidate = text.slice(start, end);
+      const boundaries = [...candidate.matchAll(/[.!?。！？]\s*|\s+/g)];
+      const boundary = boundaries.at(-1);
+      if (boundary && boundary.index + boundary[0].length > candidate.length / 2) {
+        end = start + boundary.index + boundary[0].length;
+      }
+    }
+    const piece = text.slice(start, end);
+    const separator = end === text.length ? "" : /\n\s*$/.test(piece) ? "\n" : /\s$/.test(piece) || targetLanguage !== "zh" ? " " : "";
+    pieces.push({ text: piece, separator });
+    start = end;
+  }
+  return pieces.length ? pieces : [{ text, separator: "" }];
 }
 
 /** Deterministic glossary version from sorted entries. */
@@ -304,7 +378,7 @@ export function glossaryVersion(glossary: Record<string, string>): string {
   return `g_${fnv1a(entries).toString(16)}`;
 }
 
-/** Small deterministic hash (FNV-1a) — also used for source hashing. */
+/** Small deterministic hash (FNV-1a) used for glossary versions. */
 export function fnv1a(text: string): number {
   let hash = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {

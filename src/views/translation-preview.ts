@@ -17,6 +17,7 @@ export interface PreviewItem {
   input: ReinsertionInput;
   included: boolean;
   edited: boolean;
+  failed?: boolean;
 }
 
 export interface PreviewJob {
@@ -33,6 +34,7 @@ export interface PreviewJob {
 export class TranslationPreviewView extends ItemView {
   private plugin: ScholarBridgePlugin;
   private job: PreviewJob | null = null;
+  private applying = false;
   /** Indices with a retry request in flight; their buttons render disabled. */
   private retryingIndices = new Set<number>();
   /** Wired by the translate command so Retry re-runs a single block. */
@@ -96,10 +98,14 @@ export class TranslationPreviewView extends ItemView {
     const header = contentEl.createDiv("scholar-bridge-preview-header");
     header.createEl("strong", { text: `Translation preview — ${job.items.length} block(s)` });
     const controls = header.createDiv("scholar-bridge-preview-controls");
-    controls.createEl("button", { text: t("Apply"), cls: "mod-cta" }).addEventListener("click", () => {
+    const apply = controls.createEl("button", { text: t("Apply"), cls: "mod-cta" });
+    apply.disabled = this.applying || this.retryingIndices.size > 0;
+    apply.addEventListener("click", () => {
       void this.applyJob();
     });
-    controls.createEl("button", { text: t("Discard all") }).addEventListener("click", () => {
+    const discard = controls.createEl("button", { text: t("Discard all") });
+    discard.disabled = this.applying;
+    discard.addEventListener("click", () => {
       this.job = null;
       this.renderEmpty();
     });
@@ -117,7 +123,7 @@ export class TranslationPreviewView extends ItemView {
     sourceRow.createEl("div", { text: item.input.range.raw, cls: "scholar-bridge-preview-source" });
 
     const translationRow = card.createDiv("scholar-bridge-preview-row");
-    translationRow.createEl("span", {
+    const translationLabel = translationRow.createEl("span", {
       text: item.edited ? t("Translation (edited)") : t("Translation"),
       cls: "scholar-bridge-preview-label",
     });
@@ -125,24 +131,35 @@ export class TranslationPreviewView extends ItemView {
       cls: "scholar-bridge-preview-textarea",
     });
     textarea.value = item.input.translation;
+    textarea.disabled = this.applying || this.retryingIndices.has(index);
+    const failureNotice = item.failed
+      ? translationRow.createEl("p", { text: t("Translation failed. Retry this block."), cls: "scholar-bridge-status-error" })
+      : null;
     // `input` (not `change`) so an Apply right after typing cannot drop the
     // last edit when the textarea never lost focus.
     textarea.addEventListener("input", () => {
       item.input.translation = textarea.value;
       item.edited = true;
+      item.failed = !textarea.value.trim();
+      if (item.failed) item.included = false;
+      acceptBtn.disabled = this.applying || this.retryingIndices.has(index) || item.failed;
+      acceptBtn.setText(item.included ? t("✓ Accepted") : t("Accept"));
+      acceptBtn.classList.toggle("mod-cta", item.included);
+      translationLabel.setText(t("Translation (edited)"));
+      if (!item.failed) failureNotice?.remove();
     });
-
     const actions = card.createDiv("scholar-bridge-preview-actions");
     const acceptBtn = actions.createEl("button", {
       text: item.included ? t("✓ Accepted") : t("Accept"),
       cls: item.included ? "mod-cta" : "",
     });
+    acceptBtn.disabled = this.applying || this.retryingIndices.has(index) || Boolean(item.failed) || !item.input.translation.trim();
     acceptBtn.addEventListener("click", () => {
       item.included = !item.included;
       this.render();
     });
     const retryBtn = actions.createEl("button", { text: t("Retry") });
-    retryBtn.disabled = this.retryingIndices.has(index);
+    retryBtn.disabled = this.applying || this.retryingIndices.size > 0;
     retryBtn.addEventListener("click", () => {
       void this.retryHandler?.(index);
     });
@@ -153,7 +170,7 @@ export class TranslationPreviewView extends ItemView {
     const rejectBtn = actions.createEl("button", { text: t("Reject") });
     // A retry is in flight for this index — removing the item now would
     // shift indices under the retry's result write-back (CODE_REVIEW_R2 P3-5).
-    rejectBtn.disabled = this.retryingIndices.has(index);
+    rejectBtn.disabled = this.applying || this.retryingIndices.size > 0;
     rejectBtn.addEventListener("click", () => {
       this.retryingIndices.delete(index);
       this.job?.items.splice(index, 1);
@@ -165,12 +182,18 @@ export class TranslationPreviewView extends ItemView {
 
   private async applyJob(): Promise<void> {
     const job = this.job;
-    if (!job || job.applied) return;
+    if (!job || job.applied || this.applying || this.retryingIndices.size > 0) return;
     const included = job.items.filter((i) => i.included);
     if (!included.length) {
       new Notice(t("ScholarBridge: nothing accepted to apply."));
       return;
     }
+    if (included.some((item) => item.failed || !item.input.translation.trim())) {
+      new Notice(t("Translation failed. Retry this block."));
+      return;
+    }
+    this.applying = true;
+    this.render();
     try {
       // The target note is resolved by path inside applyTranslationJob — the
       // preview does not have to be (and usually is not) the active leaf.
@@ -181,10 +204,12 @@ export class TranslationPreviewView extends ItemView {
       );
       job.applied = true;
       new Notice(t("ScholarBridge: applied {{n}} translation block(s).", { n: included.length }));
-      this.job = null;
-      this.renderEmpty();
+      if (this.job === job) this.job = null;
     } catch (err) {
       new Notice(t("ScholarBridge: apply failed — {{msg}}", { msg: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      this.applying = false;
+      this.render();
     }
   }
 }

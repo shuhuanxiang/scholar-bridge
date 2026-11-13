@@ -289,6 +289,9 @@ function buildSystemPrompt(req: TranslationRequest): string {
     "You are a careful academic translator.",
     `Translate from ${req.sourceLanguage} to ${req.targetLanguage}.`,
     "Style: " + req.style + ".",
+    ...(req.glossary && Object.keys(req.glossary).length > 0
+      ? ["Use these fixed term translations:", JSON.stringify(req.glossary)]
+      : []),
     "Rules:",
     "- Preserve every placeholder token (e.g. ⟦MATH_001⟧, ⟦LINK_001⟧) EXACTLY as written.",
     "- Do not translate mathematics, code, citations, or file names.",

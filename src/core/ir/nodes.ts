@@ -15,6 +15,8 @@ export interface SourceLocation {
   start?: number;
   end?: number;
   raw?: string;
+  startLine?: number;
+  endLine?: number;
 }
 
 export interface BaseNode {

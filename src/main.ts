@@ -1,4 +1,4 @@
-import { MarkdownView, Notice, Plugin } from "obsidian";
+import { MarkdownView, Notice, Plugin, type Editor } from "obsidian";
 import { t } from "./i18n";
 import {
   DEFAULT_SETTINGS,
@@ -7,6 +7,7 @@ import {
   type ScholarBridgeSettings,
 } from "./settings/settings";
 import { ScholarBridgeSettingTab } from "./settings/settings-tab";
+import { SettingsSaveQueue } from "./settings/save-queue";
 import { registerEditorFeatures } from "./editor/commands";
 import { registerDiffView } from "./views/diff-view";
 import {
@@ -40,6 +41,17 @@ export default class ScholarBridgePlugin extends Plugin {
   serverManager: LlamaServerManager | null = null;
   /** Persistent translation cache (M9); loaded in onload, saved with settings. */
   translationCache: TranslationCache = new TranslationCache();
+  private settingsSaves = new SettingsSaveQueue(
+    async () => this.saveData(structuredClone({
+      ...this.settings,
+      translationCache: this.translationCache.toJSON(),
+    })),
+    (error) => {
+      new Notice(t("ScholarBridge: could not save settings — {{msg}}", {
+        msg: error instanceof Error ? error.message : String(error),
+      }));
+    },
+  );
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -97,34 +109,7 @@ export default class ScholarBridgePlugin extends Plugin {
     }
     const editor = view.editor;
 
-    // All-or-nothing: stale ranges must abort before anything is written.
-    const lineCount = editor.lineCount();
-    const stale = inputs.find(
-      (input) =>
-        input.range.startLine < 0 ||
-        input.range.endLine < input.range.startLine ||
-        input.range.endLine >= lineCount,
-    );
-    if (stale) {
-      throw new Error("the note has changed since translation — re-run Translate");
-    }
-
-    // Content guard (CODE_REVIEW_R2 P1-1): line bounds alone cannot tell that
-    // the ranges still point at the translated text. When the command path
-    // recorded the exact expected text (verifyRaw), require a verbatim match
-    // — this also makes writing into a DIFFERENT note with a fitting line
-    // count impossible.
-    const mismatched = inputs.find((input) => {
-      if (input.verifyRaw === undefined) return false;
-      const current = editor.getRange(
-        { line: input.range.startLine, ch: 0 },
-        { line: input.range.endLine, ch: editor.getLine(input.range.endLine).length },
-      );
-      return current !== input.verifyRaw;
-    });
-    if (mismatched) {
-      throw new Error("the note has changed since translation — re-run Translate");
-    }
+    this.validateTranslationInputs(editor, inputs);
 
     if (mode === "translated-copy") {
       const lines = editor.getValue().split("\n");
@@ -132,8 +117,7 @@ export default class ScholarBridgePlugin extends Plugin {
       const newPath = `${filePath.replace(/\.md$/, "")}.translated.md`;
       const existing = this.app.vault.getAbstractFileByPath(newPath);
       if (existing) {
-        new Notice(t("ScholarBridge: {{path}} already exists.", { path: newPath }));
-        return;
+        throw new Error(t("ScholarBridge: {{path}} already exists.", { path: newPath }));
       }
       await this.app.vault.create(newPath, out.join("\n"));
       return;
@@ -145,7 +129,7 @@ export default class ScholarBridgePlugin extends Plugin {
     const sorted = [...inputs].sort((a, b) => a.range.startLine - b.range.startLine);
     const lastLine = editor.lineCount() - 1;
     const changes = sorted.map((input) => {
-      const block = buildTranslationBlock(input);
+      const block = buildTranslationBlock(input, mode);
       if (mode === "replace") {
         return {
           from: { line: input.range.startLine, ch: 0 },
@@ -170,7 +154,34 @@ export default class ScholarBridgePlugin extends Plugin {
       };
     });
     await this.app.workspace.revealLeaf(view.leaf);
+    if (view.file?.path !== filePath) {
+      throw new Error("the note has changed since translation — re-run Translate");
+    }
+    this.validateTranslationInputs(editor, inputs);
     editor.transaction({ changes });
+  }
+
+  private validateTranslationInputs(editor: Editor, inputs: ReinsertionInput[]): void {
+    const lineCount = editor.lineCount();
+    for (const input of inputs) {
+      if (!input.translation.trim()) throw new Error("translation is empty — retry this block");
+      const checks = [
+        { ...input.range, raw: input.verifyRaw },
+        ...(input.verifySource ? [input.verifySource] : []),
+      ];
+      for (const range of checks) {
+        if (
+          !Number.isSafeInteger(range.startLine) || !Number.isSafeInteger(range.endLine) ||
+          range.startLine < 0 || range.endLine < range.startLine || range.endLine >= lineCount ||
+          (range.raw !== undefined && editor.getRange(
+            { line: range.startLine, ch: 0 },
+            { line: range.endLine, ch: editor.getLine(range.endLine).length },
+          ) !== range.raw)
+        ) {
+          throw new Error("the note has changed since translation — re-run Translate");
+        }
+      }
+    }
   }
 
   /** First open markdown editor whose file matches the job's source path. */
@@ -188,6 +199,7 @@ export default class ScholarBridgePlugin extends Plugin {
    * process never outlives the plugin (Obsidian does not await onunload).
    */
   onunload(): void {
+    void this.settingsSaves.flush();
     const manager = this.serverManager;
     this.serverManager = null;
     if (!manager) return;
@@ -219,9 +231,6 @@ export default class ScholarBridgePlugin extends Plugin {
   }
 
   async saveSettings(): Promise<void> {
-    await this.saveData({
-      ...this.settings,
-      translationCache: this.translationCache.toJSON(),
-    });
+    await this.settingsSaves.schedule();
   }
 }

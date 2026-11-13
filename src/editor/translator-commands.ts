@@ -4,6 +4,7 @@ import { LlamaClient } from "../translation/llama/client";
 import {
   LlamaServerManager,
   createNodeSpawner,
+  type ServerManagerConfig,
 } from "../translation/llama/server-manager";
 import { ConfirmModal } from "./modal";
 import { t } from "../i18n";
@@ -108,20 +109,24 @@ export function makeClient(plugin: ScholarBridgePlugin): LlamaClient {
 }
 
 export function makeServerManager(plugin: ScholarBridgePlugin): LlamaServerManager {
-  const llama = plugin.settings.llama;
   return new LlamaServerManager(
-    {
-      executablePath: llama.executablePath,
-      modelPath: llama.modelPath,
-      host: llama.host,
-      port: llama.port,
-      gpuLayers: llama.gpuLayers,
-      contextSize: llama.contextSize,
-      idleTimeoutMs: llama.idleShutdownMinutes * 60_000,
-    },
+    serverConfig(plugin),
     makeClient(plugin),
     createNodeSpawner(),
   );
+}
+
+function serverConfig(plugin: ScholarBridgePlugin): ServerManagerConfig {
+  const llama = plugin.settings.llama;
+  return {
+    executablePath: llama.executablePath,
+    modelPath: llama.modelPath,
+    host: llama.host,
+    port: llama.port,
+    gpuLayers: llama.gpuLayers,
+    contextSize: llama.contextSize,
+    idleTimeoutMs: llama.idleShutdownMinutes * 60_000,
+  };
 }
 
 export function clientLabel(plugin: ScholarBridgePlugin): string {
@@ -141,20 +146,26 @@ export function clientLabel(plugin: ScholarBridgePlugin): string {
  * second overwriting the first leaks its process. A second caller instead
  * joins the pending promise.
  */
-let pendingEnsure: Promise<boolean> | null = null;
+const pendingEnsures = new WeakMap<ScholarBridgePlugin, Promise<boolean>>();
 
 export async function ensureTranslatorReady(plugin: ScholarBridgePlugin): Promise<boolean> {
-  if (plugin.serverManager?.status() === "ready") return true;
-  if (pendingEnsure) return pendingEnsure;
-  pendingEnsure = ensureTranslatorReadyOnce(plugin).finally(() => {
-    pendingEnsure = null;
+  const pending = pendingEnsures.get(plugin);
+  if (pending) return pending;
+  const ensure = ensureTranslatorReadyOnce(plugin).finally(() => {
+    pendingEnsures.delete(plugin);
   });
-  return pendingEnsure;
+  pendingEnsures.set(plugin, ensure);
+  return ensure;
 }
 
 async function ensureTranslatorReadyOnce(plugin: ScholarBridgePlugin): Promise<boolean> {
-  if (plugin.serverManager?.status() === "ready") return true;
   const llama = plugin.settings.llama;
+  const previous = plugin.serverManager;
+  if (previous && (!llama.executablePath || !previous.matchesConfig(serverConfig(plugin)))) {
+    await previous.stop();
+    if (plugin.serverManager === previous) plugin.serverManager = null;
+  }
+  if (plugin.serverManager?.status() === "ready") return true;
   if (llama.executablePath && llama.modelPath) {
     if (!plugin.serverManager) {
       if (llama.confirmSpawn) {

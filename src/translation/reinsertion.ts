@@ -3,7 +3,8 @@ import {
   encodeTranslationStart,
   type TranslationMeta,
 } from "../core/ir/metadata";
-import { fnv1a } from "./translator";
+import { sourceHash } from "../core/ir/source-hash";
+export { sourceHash };
 
 /**
  * Translation reinsertion (PRODUCT_REQUIREMENTS.md FR-6, PRD §3.8).
@@ -45,23 +46,14 @@ export interface ReinsertionInput {
    * this is the block text, NOT the source.
    */
   verifyRaw?: string;
+  /** Original source snapshot, separate from the translation being replaced. */
+  verifySource?: SourceRange;
+  /** Preserve the original block's export semantics when refreshing a translation. */
+  writeMode?: WriteMode;
 }
 
-/**
- * Stable hash over normalized source text (TECHNICAL_DESIGN.md §14).
- *
- * Collision bound: 32-bit FNV-1a plus a length suffix. Same-length inputs
- * collide with ~50% probability after ~2^16 distinct texts (birthday bound),
- * and a collision merely suppresses one stale-translation notice —
- * acceptable for personal-note freshness hints; not a security hash.
- */
-export function sourceHash(text: string): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  const h = fnv1a(normalized).toString(16).padStart(8, "0");
-  return `${h}_${normalized.length.toString(16)}`;
-}
-
-export function buildTranslationMeta(input: ReinsertionInput): TranslationMeta {
+/** Record both the source identity and the block's export semantics. */
+export function buildTranslationMeta(input: ReinsertionInput, mode: WriteMode = "insert-below"): TranslationMeta {
   return {
     schemaVersion: 1,
     sourceNodeId: input.nodeId,
@@ -72,11 +64,13 @@ export function buildTranslationMeta(input: ReinsertionInput): TranslationMeta {
     glossaryVersion: input.meta.glossaryVersion,
     promptVersion: input.meta.promptVersion,
     status: "fresh",
+    writeMode: input.writeMode ?? mode,
+    sourceLineCount: input.range.raw.split("\n").length,
   };
 }
 
-export function buildTranslationBlock(input: ReinsertionInput): string {
-  const meta = buildTranslationMeta(input);
+export function buildTranslationBlock(input: ReinsertionInput, mode: WriteMode = "insert-below"): string {
+  const meta = buildTranslationMeta(input, mode);
   return [
     encodeTranslationStart(meta),
     input.translation,
@@ -88,7 +82,7 @@ export type WriteMode = "insert-below" | "replace" | "translated-copy" | "biling
 
 /** Editor lines after applying one block in the given mode. */
 export function applyToLines(lines: string[], input: ReinsertionInput, mode: WriteMode): string[] {
-  const block = buildTranslationBlock(input);
+  const block = buildTranslationBlock(input, mode);
   const before = lines.slice(0, input.range.startLine);
   const after = lines.slice(input.range.endLine + 1);
   const source = input.range.raw;

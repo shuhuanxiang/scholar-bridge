@@ -12,6 +12,8 @@ An academic-writing bridge for [Obsidian](https://obsidian.md): LaTeX ↔ Markdo
 - Supports the common academic constructs: `equation`, `align`, `gather`, `multline`, tables (`tabular` with `booktabs`/`multirow`/`multicolumn`), figures, algorithm/algorithmic, lists, quotes, and verbatim blocks.
 - Conservative by design: constructs outside the supported grammar are preserved **verbatim**, and uncertain parses never rewrite your source.
 - Export the active note to `.tex`, export a whole folder as fragments, or run a project export that writes `latex/main.tex` + `latex/sections/*.tex`.
+- Unsupported inline commands and citations use code spans with hidden metadata to preserve the original LaTeX on export.
+- Exports include required math/code packages and resolve local image links relative to the output. Images stay in their vault locations; keep those files available when compiling.
 
 ### Formula-aware diff
 
@@ -24,6 +26,10 @@ An academic-writing bridge for [Obsidian](https://obsidian.md): LaTeX ↔ Markdo
 - Powered by [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`: **everything runs on your machine**, nothing is sent to any cloud service.
 - Every translation is shown in a preview before anything is written; you can insert below, replace, or create a translated copy.
 - Glossary support (`term => translation`, `term => preserve` to keep terms verbatim) with YAML import, plus a persistent LRU translation cache so re-runs are instant.
+- Translation targets prose paragraphs in the selected lines. Headings, fenced code, tables, quotes, lists, math blocks, and stored translations remain untouched. Long paragraphs are split into bounded requests and applied only after every part succeeds.
+- Failed blocks remain unselected in the preview and can be retried or edited. Applying refreshed translations checks both the source and the old translation; damaged translation markers are skipped.
+- LaTeX exports retain replacement-mode translations and omit insert-below/bilingual annotations. Legacy markers without a stored write mode omit the translation only when its preceding source still matches; otherwise they retain the translation text to avoid losing prose.
+- After changing the model, host/port, GPU layers, or context size, the next translator start or translation request restarts the managed service with the updated configuration.
 
 ## Requirements
 

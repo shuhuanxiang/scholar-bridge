@@ -119,6 +119,16 @@ export function parseLatexInline(
     }
 
     if (ch === "\\") {
+      if (input.startsWith("\\(", i)) {
+        const close = input.indexOf("\\)", i + 2);
+        if (close !== -1) {
+          push(inline.math(input.slice(i + 2, close)));
+          i = close + 2;
+          continue;
+        }
+        push({ id: ids.inline(), type: "inline-raw", raw: input.slice(i) });
+        break;
+      }
       if (input[i + 1] === "\\") {
         // \\ line break inside a paragraph → soft break
         text += " ";
@@ -133,20 +143,6 @@ export function parseLatexInline(
         continue;
       }
       switch (cmd) {
-        case "\\(": {
-          const close = input.indexOf("\\)", i + 2);
-          if (close !== -1) {
-            const latex = input.slice(i + 2, close);
-            if (latex.trim()) {
-              push(inline.math(latex));
-              i = close + 2;
-              continue;
-            }
-          }
-          text += cmd;
-          i += cmd.length;
-          continue;
-        }
         case "\\%":
         case "\\&":
         case "\\_":
@@ -161,6 +157,7 @@ export function parseLatexInline(
         case "\\textbackslash": {
           text += "\\";
           i += cmd.length;
+          if (input.startsWith("{}", i)) i += 2;
           continue;
         }
         default:
@@ -232,13 +229,15 @@ export function parseLatexInline(
           continue;
         }
         // Unknown command with a brace group: preserve verbatim.
-        push({ id: ids.inline(), type: "inline-raw", raw: input.slice(i, group.end) });
-        i = group.end;
+        const end = readUnknownArguments(input, group.end);
+        push({ id: ids.inline(), type: "inline-raw", raw: input.slice(i, end) });
+        i = end;
         continue;
       }
       // Unknown command without arguments (e.g. \item, \midrule in text)
-      push({ id: ids.inline(), type: "inline-raw", raw: cmd });
-      i += cmd.length;
+      const end = readUnknownArguments(input, after);
+      push({ id: ids.inline(), type: "inline-raw", raw: input.slice(i, end) });
+      i = end;
       continue;
     }
 
@@ -260,6 +259,18 @@ export function parseLatexInline(
   }
   flush();
   return mergeText(out);
+}
+
+function readUnknownArguments(input: string, from: number): number {
+  let end = from;
+  if (input[end] === "*") end++;
+  for (;;) {
+    const start = skipSpaces(input, end);
+    if (input[start] !== "{" && input[start] !== "[") return end;
+    const group = input[start] === "{" ? readBraceGroup(input, start) : readBracketGroup(input, start);
+    if (!group) return input.length;
+    end = group.end;
+  }
 }
 
 function inlineText(n: ScholarInlineNode): string {

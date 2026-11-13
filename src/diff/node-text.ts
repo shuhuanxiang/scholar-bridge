@@ -60,17 +60,19 @@ export function blockComparableText(node: ScholarBlockNode, opts: DiffOptions): 
     case "code":
       return node.code;
     case "list":
-      return node.items.map((item) => item.children.map((c) => blockComparableText(c, opts)).join(" ")).join(" ");
+      return node.items.map((item) => item.children.map((c) => blockComparableText(c, opts)).join("\n")).join("\n");
+    case "list-item":
+      return node.children.map((child) => blockComparableText(child, opts)).join("\n");
     case "quote":
       return node.children.map((c) => blockComparableText(c, opts)).join(" ");
     case "table":
-      return node.rows
+      return (node.caption ? node.caption + "\n" : "") + node.rows
         .map((row) => row.filter((c) => !c.rowSpanContinue).map((c) => inlineToComparable(c.content, opts)).join("|"))
         .join("\n");
     case "figure":
-      return node.path;
+      return `![${node.caption ?? ""}](${node.path})`;
     case "algorithm":
-      return node.body.map((s) => s.text).join("\n");
+      return (node.caption ? node.caption + "\n" : "") + node.body.map((s) => s.text).join("\n");
     case "translation-block":
       return node.text;
     case "raw-latex":

@@ -65,6 +65,13 @@ const zh: Record<string, string> = {
   "ScholarBridge: nothing to translate at the cursor.": "ScholarBridge：光标处没有可翻译的内容。",
   "ScholarBridge: selection contains no translatable prose.":
     "ScholarBridge：选中内容不含可翻译的正文。",
+  "ScholarBridge: skipped {{n}} damaged translation block(s).":
+    "ScholarBridge：已跳过 {{n}} 个标记损坏的翻译块。",
+  "Translation failed. Retry this block.": "翻译失败，请重试此块。",
+  "ScholarBridge: the note changed while the paste dialog was open. Paste again.":
+    "ScholarBridge：笔记在粘贴对话框打开期间发生了变化，请重新粘贴。",
+  "ScholarBridge: could not save settings — {{msg}}":
+    "ScholarBridge：无法保存设置：{{msg}}",
   "ScholarBridge: translator not ready — {{detail}}": "ScholarBridge：翻译服务未就绪——{{detail}}",
   "ScholarBridge: local translator failed to become ready.":
     "ScholarBridge：本地翻译服务未能就绪。",
