@@ -60,6 +60,49 @@ afterEach(() => {
 });
 
 describe("review: commands, previews and real translation writes", () => {
+  it("uses custom generation settings for translation, retry and quoted-block refresh", async () => {
+    const host = setup();
+    host.plugin.settings.customPrompt = "Use concise prose.";
+    Object.assign(host.plugin.settings.llama, { topP: 0.8, topK: 12, maxTokens: 512 });
+    await translate(host);
+    expect(vi.mocked(LlamaClient.prototype.translate).mock.lastCall?.[0]).toMatchObject({
+      customPrompt: "Use concise prose.", topP: 0.8, topK: 12, maxTokens: 512,
+    });
+
+    host.plugin.settings.customPrompt = "Use plain prose.";
+    Object.assign(host.plugin.settings.llama, { topP: 0.7, topK: 0, maxTokens: 1024 });
+    await host.preview.retryHandler!(0);
+    const updated = { customPrompt: "Use plain prose.", topP: 0.7, topK: 0, maxTokens: 1024 };
+    expect(vi.mocked(LlamaClient.prototype.translate).mock.lastCall?.[0]).toMatchObject(updated);
+    await apply(host.preview);
+    expect(host.editor.getValue()).toContain("\n> Translated: Source.\n");
+    expect(scanFreshness(host.editor.getValue()).entries[0].status).toBe("fresh");
+
+    host.editor.setValue(host.editor.getValue().replace("Source.", "Changed."));
+    await translate(host, "translate-changed-blocks");
+    expect(vi.mocked(LlamaClient.prototype.translate).mock.lastCall?.[0]).toMatchObject(updated);
+    await apply(host.preview);
+    expect(host.editor.getValue()).toContain("\n> Translated: Changed.\n");
+    expect(host.editor.getValue()).not.toContain("Translated: Source.");
+    expect(host.editor.getValue()).not.toContain("\n> > Translated:");
+    expect(scanFreshness(host.editor.getValue()).staleEntries).toHaveLength(0);
+    const translations = parseMarkdown(host.editor.getValue()).children.filter((node) => node.type === "translation-block");
+    expect(translations).toHaveLength(1);
+    expect(translations[0]).toMatchObject({ text: "Translated: Changed." });
+  });
+
+  it("quotes each accepted paragraph and preserves adjacent source paragraphs", async () => {
+    const host = setup("First source.\n\nSecond source.\n\nTail.");
+    await translate(host);
+    await apply(host.preview);
+    const report = scanFreshness(host.editor.getValue());
+    expect(report.entries.map((entry) => entry.sourceRaw)).toEqual(["First source.", "Second source.", "Tail."]);
+    expect(report.entries.every((entry) => entry.status === "fresh")).toBe(true);
+    expect(host.editor.getValue()).toContain("\n> Translated: First source.\n");
+    expect(host.editor.getValue()).toContain("\n> Translated: Second source.\n");
+    expect(host.editor.getValue()).toContain("\n> Translated: Tail.\n");
+  });
+
   it.each(["```python", "~~~~python", "````python"])("excludes the complete %s fence even after internal blank lines", async (fence) => {
     const close = fence.match(/^[`~]+/)![0];
     const host = setup(`Intro.\n\n${fence}\nprint("first")\n\nprint("second")\n${close}\n\nEnd.`);

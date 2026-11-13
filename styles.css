@@ -2,7 +2,7 @@
 
 .scholar-bridge-diff-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 4px;
   font-size: var(--font-ui-smaller);
 }
@@ -16,7 +16,7 @@
 
 .scholar-bridge-diff-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 4px;
 }
 
@@ -39,6 +39,7 @@
 .scholar-bridge-diff-applybar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 6px;
   padding: 6px 8px;
@@ -47,7 +48,16 @@
   background: var(--background-secondary);
 }
 
+.scholar-bridge-diff-applybar[hidden] {
+  display: none;
+}
+
+.scholar-bridge-diff-sentinel {
+  height: 1px;
+}
+
 .scholar-bridge-diff-header {
+  overflow-wrap: anywhere;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--background-modifier-border);
   margin-bottom: 8px;
@@ -130,6 +140,8 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--background-modifier-border);
   margin-bottom: 8px;
@@ -173,6 +185,7 @@
 .scholar-bridge-preview-actions {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 /* ---------------------------------------------------------------------------

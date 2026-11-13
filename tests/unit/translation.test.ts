@@ -15,6 +15,8 @@ import {
 } from "../../src/translation/translator";
 import type { TranslationProvider, TranslationResult } from "../../src/translation/provider";
 import { ProviderError } from "../../src/translation/provider";
+import type { TranslationRequest } from "../../src/translation/provider";
+import { TranslationCache } from "../../src/translation/cache";
 
 describe("Translation protection (TEST_PLAN §10)", () => {
   const glossary = { FedContra: "preserve", "federated learning": "联邦学习" };
@@ -349,5 +351,46 @@ describe("Batch chunking (context overflow guard)", () => {
     await translateBlocks(provider, mkBlocks(1), { ...opts, temperature: 0.7 });
     await translateBlocks(provider, mkBlocks(1), opts);
     expect(seen).toEqual([0.7, undefined]);
+  });
+
+  it("forwards all generation options through chunks and per-block fallbacks", async () => {
+    const seen: TranslationRequest[] = [];
+    const generation = { topP: 0.7, topK: 16, maxTokens: 1024, customPrompt: "Use concise prose." };
+    const provider: TranslationProvider = {
+      health: async () => true,
+      translate: async (req) => {
+        seen.push(req);
+        return {
+          blocks: req.blocks.length > 1
+            ? []
+            : req.blocks.map((block) => ({ id: block.id, translation: block.text })),
+          raw: "", model: "test",
+        };
+      },
+    };
+    const result = await translateBlocks(provider, mkBlocks(4), { ...opts, ...generation });
+    expect(result.blocks).toHaveLength(4);
+    expect(seen).toHaveLength(6);
+    for (const request of seen) expect(request).toMatchObject(generation);
+  });
+
+  it("reuses matching cache entries and regenerates after any generation setting changes", async () => {
+    const cache = new TranslationCache();
+    let calls = 0;
+    const provider: TranslationProvider = {
+      health: async () => true,
+      translate: async (req) => ({
+        blocks: req.blocks.map((block) => ({ id: block.id, translation: `Result ${++calls}` })),
+        raw: "", model: "test",
+      }),
+    };
+    const variants = [{}, { topP: 0.8 }, { topK: 0 }, { maxTokens: 100 }, { customPrompt: "Use concise prose." }];
+    for (const variant of variants) {
+      const options = { ...opts, cache, ...variant };
+      const first = await translateBlocks(provider, mkBlocks(1), options);
+      const cached = await translateBlocks(provider, mkBlocks(1), options);
+      expect(cached.blocks).toEqual(first.blocks);
+    }
+    expect(calls).toBe(variants.length);
   });
 });

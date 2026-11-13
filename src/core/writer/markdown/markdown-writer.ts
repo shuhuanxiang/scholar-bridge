@@ -7,8 +7,7 @@ import type {
 import {
   encodeMetaComment,
   encodeInlineLatex,
-  encodeTranslationEnd,
-  encodeTranslationStart,
+  encodeTranslationBlock,
 } from "../../ir/metadata";
 
 /**
@@ -23,6 +22,10 @@ export function writeMarkdown(doc: ScholarDocument): string {
   const parts: string[] = [];
   const meta = doc.metadata as { yaml?: string } | undefined;
   if (meta?.yaml) parts.push(`---\n${meta.yaml}\n---\n`);
+  if (typeof doc.metadata?.latexPreamble === "string") {
+    const { yaml: _yaml, ...preserved } = doc.metadata;
+    parts.push(encodeMetaComment({ ...preserved, type: "document" }));
+  }
   for (const node of doc.children) {
     parts.push(writeBlock(node));
   }
@@ -73,13 +76,15 @@ function writeBlock(node: ScholarBlockNode): string {
       return hasSpans(node) ? writeHtmlTable(node) : writeGfmTable(node);
     case "figure": {
       const widthSuffix = node.width ? `|${node.width}` : "";
-      const hasLatexMeta = Boolean(node.caption || node.label || node.latexWidth || node.placement);
+      const hasLatexMeta = Boolean(node.caption || node.label || node.latexWidth || node.placement || node.environment || node.graphicsOptions);
       if (hasLatexMeta) {
         const extra: Record<string, unknown> = { type: "figure" };
         if (node.caption) extra.caption = node.caption;
         if (node.label) extra.label = node.label;
         if (node.latexWidth) extra.latexWidth = node.latexWidth;
         if (node.placement) extra.placement = node.placement;
+        if (node.environment) extra.environment = node.environment;
+        if (node.graphicsOptions !== undefined) extra.graphicsOptions = node.graphicsOptions;
         return `![[${node.path}${widthSuffix}]]\n\n${encodeMetaComment(extra)}`;
       }
       if (node.width) return `![[${node.path}${widthSuffix}]]`;
@@ -104,7 +109,7 @@ function writeBlock(node: ScholarBlockNode): string {
     case "raw-html":
       return node.raw;
     case "translation-block":
-      return `${encodeTranslationStart(node.meta)}\n${node.text}\n${encodeTranslationEnd()}`;
+      return encodeTranslationBlock(node.meta, node.text);
     case "thematic-break":
       return "---";
     default:
@@ -129,7 +134,8 @@ function writeInline(node: ScholarInlineNode): string {
         return `[[${node.target}${node.alias ? "|" + node.alias : ""}]]`;
       }
       const titleSuffix = node.title !== undefined ? ` "${node.title}"` : "";
-      return `[${node.alias ?? node.target}](${node.target}${titleSuffix})`;
+      const label = node.children ? node.children.map(writeInline).join("") : node.alias ?? node.target;
+      return `[${label}](${node.target}${titleSuffix})`;
     }
     case "citation":
       return writeCodeSpan(node.raw) + encodeInlineLatex(node.raw, node.keys);
@@ -227,13 +233,16 @@ function writeGfmTable(table: TableNode): string {
   const lines = [rowToLine(header), alignLine];
   for (const row of table.rows.slice(1)) lines.push(rowToLine(row));
   const extras: string[] = [];
-  if (table.caption || table.label || table.booktabs || table.columnSpec || table.placement) {
+  if (table.caption || table.label || table.booktabs || table.columnSpec || table.placement || table.environment || table.tabularEnvironment) {
     const extra: Record<string, unknown> = { type: "table" };
     if (table.caption) extra.caption = table.caption;
     if (table.label) extra.label = table.label;
     if (table.booktabs) extra.booktabs = true;
     if (table.columnSpec) extra.columnSpec = table.columnSpec;
     if (table.placement) extra.placement = table.placement;
+    if (table.environment) extra.environment = table.environment;
+    if (table.tabularEnvironment) extra.tabularEnvironment = table.tabularEnvironment;
+    if (table.tabularWidth) extra.tabularWidth = table.tabularWidth;
     extras.push(encodeMetaComment(extra));
   }
   return [...lines, ...extras].join("\n");
@@ -258,13 +267,16 @@ function writeHtmlTable(table: TableNode): string {
   }
   lines.push("</table>");
   const extras: string[] = [];
-  if (table.label || table.booktabs || table.columnSpec || table.placement) {
+  if (table.label || table.booktabs || table.columnSpec || table.placement || table.environment || table.tabularEnvironment) {
     const extra: Record<string, unknown> = { type: "table" };
     if (table.caption) extra.caption = table.caption;
     if (table.label) extra.label = table.label;
     if (table.booktabs) extra.booktabs = true;
     if (table.columnSpec) extra.columnSpec = table.columnSpec;
     if (table.placement) extra.placement = table.placement;
+    if (table.environment) extra.environment = table.environment;
+    if (table.tabularEnvironment) extra.tabularEnvironment = table.tabularEnvironment;
+    if (table.tabularWidth) extra.tabularWidth = table.tabularWidth;
     extras.push(encodeMetaComment(extra));
   }
   return [...lines, ...extras].join("\n");

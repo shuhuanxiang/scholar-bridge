@@ -28,13 +28,15 @@ function inlineNodeText(node: ScholarInlineNode, opts: DiffOptions): string {
       return opts.ignoreWrappers
         ? inlineToComparable(node.children, opts)
         : `*${inlineToComparable(node.children, opts)}*`;
-    case "link":
+    case "link": {
       // The target must always take part in comparisons: retargeting a link
       // without touching the alias is a real change even when wrappers are
       // ignored. (Title is metadata and stays out.)
+      const label = node.children ? inlineToComparable(node.children, opts) : node.alias;
       return opts.ignoreWrappers
-        ? `${node.alias ?? ""}(${node.target})`
-        : `[${node.alias ?? node.target}](${node.target})`;
+        ? `${label ?? ""}(${node.target})`
+        : `[${label ?? node.target}](${node.target})`;
+    }
     case "citation":
       return opts.ignoreCitations ? "" : node.raw;
     case "inline-raw":

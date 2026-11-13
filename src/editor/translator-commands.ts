@@ -8,6 +8,7 @@ import {
 } from "../translation/llama/server-manager";
 import { ConfirmModal } from "./modal";
 import { t } from "../i18n";
+import { validateLlamaSettings } from "../settings/settings";
 
 /**
  * Translator lifecycle UI: status bar (§17.2) + Start/Stop commands (FR-5).
@@ -98,13 +99,15 @@ export function registerTranslatorFeatures(plugin: ScholarBridgePlugin): void {
 const STARTING_WAIT_MS = 120_000;
 
 export function makeClient(plugin: ScholarBridgePlugin): LlamaClient {
+  validateLlamaSettings(plugin.settings.llama);
   const { host, port, modelPath, requestTimeoutMs } = plugin.settings.llama;
-  const client = LlamaClient.fromBaseUrl(host, port, modelPath || "local-model", requestTimeoutMs);
+  const client = LlamaClient.fromBaseUrl(host, port, modelPath || "local-model", requestTimeoutMs, plugin.lifetime.signal);
   // Contract with translation/llama: fires at the top of every chat() so each
   // translation request re-arms the owned server's idle timer, and fires once
   // the request settles so a long generation is never shut down mid-flight.
-  client.onRequestStart = () => plugin.serverManager?.beginRequest();
-  client.onRequestEnd = () => plugin.serverManager?.endRequest();
+  const owner = plugin.serverManager;
+  client.onRequestStart = () => owner?.beginRequest();
+  client.onRequestEnd = () => owner?.endRequest();
   return client;
 }
 
@@ -117,6 +120,7 @@ export function makeServerManager(plugin: ScholarBridgePlugin): LlamaServerManag
 }
 
 function serverConfig(plugin: ScholarBridgePlugin): ServerManagerConfig {
+  validateLlamaSettings(plugin.settings.llama);
   const llama = plugin.settings.llama;
   return {
     executablePath: llama.executablePath,
@@ -149,9 +153,14 @@ export function clientLabel(plugin: ScholarBridgePlugin): string {
 const pendingEnsures = new WeakMap<ScholarBridgePlugin, Promise<boolean>>();
 
 export async function ensureTranslatorReady(plugin: ScholarBridgePlugin): Promise<boolean> {
+  if (plugin.lifetime.signal.aborted) return false;
+  validateLlamaSettings(plugin.settings.llama);
   const pending = pendingEnsures.get(plugin);
   if (pending) return pending;
-  const ensure = ensureTranslatorReadyOnce(plugin).finally(() => {
+  const ensure = ensureTranslatorReadyOnce(plugin).catch((error: unknown) => {
+    if (plugin.lifetime.signal.aborted) return false;
+    throw error;
+  }).finally(() => {
     pendingEnsures.delete(plugin);
   });
   pendingEnsures.set(plugin, ensure);
@@ -163,6 +172,7 @@ async function ensureTranslatorReadyOnce(plugin: ScholarBridgePlugin): Promise<b
   const previous = plugin.serverManager;
   if (previous && (!llama.executablePath || !previous.matchesConfig(serverConfig(plugin)))) {
     await previous.stop();
+    if (plugin.lifetime.signal.aborted) return false;
     if (plugin.serverManager === previous) plugin.serverManager = null;
   }
   if (plugin.serverManager?.status() === "ready") return true;
@@ -177,9 +187,10 @@ async function ensureTranslatorReadyOnce(plugin: ScholarBridgePlugin): Promise<b
             cancelText: t("Not now"),
             onConfirm: () => resolve(true),
             onCancel: () => resolve(false),
+            signal: plugin.lifetime.signal,
           }).open();
         });
-        if (!confirmed) return false;
+        if (!confirmed || plugin.lifetime.signal.aborted) return false;
       }
       plugin.serverManager = makeServerManager(plugin);
     }
@@ -189,12 +200,13 @@ async function ensureTranslatorReadyOnce(plugin: ScholarBridgePlugin): Promise<b
     ) {
       await plugin.serverManager.start();
     }
+    if (plugin.lifetime.signal.aborted || !plugin.serverManager) return false;
     if (plugin.serverManager.status() === "starting") {
       // A start is already in flight (e.g. the user clicked Start moments
       // ago): wait it out (bounded) instead of reporting a spurious failure.
       await plugin.serverManager.waitUntilReady(STARTING_WAIT_MS);
     }
-    return plugin.serverManager.status() === "ready";
+    return !plugin.lifetime.signal.aborted && plugin.serverManager?.status() === "ready";
   }
   return makeClient(plugin).health();
 }
@@ -204,6 +216,7 @@ export async function startTranslator(
   refresh: () => void = () => {},
 ): Promise<void> {
   try {
+    if (plugin.lifetime.signal.aborted) return;
     if (!plugin.settings.llama.executablePath) {
       // Connect-only mode: probe the manually started server.
       const ok = await makeClient(plugin).health();
@@ -215,12 +228,14 @@ export async function startTranslator(
       return;
     }
     const ok = await ensureTranslatorReady(plugin);
+    if (plugin.lifetime.signal.aborted) return;
     new Notice(
       ok
         ? t("ScholarBridge: local translator ready.")
         : t("ScholarBridge: local translator is not running."),
     );
   } catch (err) {
+    if (plugin.lifetime.signal.aborted) return;
     const detail = plugin.serverManager?.lastErrorMessage();
     new Notice(
       t("ScholarBridge: local translator failed to start — {{detail}}", { detail: detail ?? (err instanceof Error ? err.message : String(err)) }),
@@ -250,7 +265,7 @@ export async function stopTranslator(
  * modal still applies.
  */
 export async function autoStartTranslatorIfConfigured(plugin: ScholarBridgePlugin): Promise<void> {
-  if (!plugin.settings.autoStartTranslator) return;
+  if (plugin.lifetime.signal.aborted || !plugin.settings.autoStartTranslator) return;
   if (plugin.serverManager?.status() === "ready") return;
   await startTranslator(plugin);
 }

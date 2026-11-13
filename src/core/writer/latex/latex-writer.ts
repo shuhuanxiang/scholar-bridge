@@ -44,19 +44,25 @@ export function writeLatexFragment(doc: ScholarDocument): string {
 }
 
 export function writeLatexArticle(doc: ScholarDocument, profile: "article" | "ctexart" = "article"): string {
+  if (doc.metadata?.preambleConflict) throw new Error("the note contains conflicting LaTeX preambles; export the documents separately");
   const packages = detectPackages(doc);
-  const meta = doc.metadata as { title?: string; author?: string; documentClass?: string } | undefined;
+  const meta = doc.metadata as {
+    title?: string; author?: string; latexPreamble?: string; latexEpilogue?: string; packages?: string[];
+  } | undefined;
   const lines: string[] = [];
-  lines.push(`\\documentclass{${profile}}`);
+  lines.push(meta?.latexPreamble !== undefined ? meta.latexPreamble.trimEnd() : `\\documentclass{${profile}}`);
   for (const pkg of packages) {
-    lines.push(`\\usepackage{${pkg}}`);
+    if (!meta?.packages?.includes(pkg)) lines.push(`\\usepackage{${pkg}}`);
   }
-  if (meta?.title) lines.push(`\\title{${meta.title}}`);
-  if (meta?.author) lines.push(`\\author{${meta.author}}`);
+  if (meta?.latexPreamble === undefined) {
+    if (meta?.title) lines.push(`\\title{${meta.title}}`);
+    if (meta?.author) lines.push(`\\author{${meta.author}}`);
+  }
   lines.push("\\begin{document}");
-  if (meta?.title) lines.push("\\maketitle");
+  if (meta?.title && meta.latexPreamble === undefined) lines.push("\\maketitle");
   lines.push(writeLatexFragment(doc));
   lines.push("\\end{document}");
+  if (meta?.latexEpilogue) lines.push(meta.latexEpilogue.trimEnd());
   return lines.join("\n") + "\n";
 }
 
@@ -67,7 +73,7 @@ export function detectPackages(doc: ScholarDocument): string[] {
     for (const node of nodes) {
       if (node.type === "inline-math") packages.add("amsmath");
       if (node.type === "link" && node.kind === "url") packages.add("hyperref");
-      if (node.type === "strong" || node.type === "emph") visitInline(node.children);
+      if (node.type === "strong" || node.type === "emph" || node.type === "link") visitInline(node.children ?? []);
     }
   };
   const visit = (nodes: ScholarBlockNode[]) => {
@@ -180,11 +186,13 @@ function writeBlock(node: ScholarBlockNode): string {
     case "figure": {
       const width = node.latexWidth ?? displayWidthToLatex(node.width) ?? "0.8\\textwidth";
       const placement = node.placement ? `[${node.placement}]` : "[htbp]";
-      const lines = [`\\begin{figure}${placement}`, "\\centering"];
-      lines.push(`\\includegraphics[width=${width}]{${node.path}}`);
+      const environment = node.environment ?? "figure";
+      const lines = [`\\begin{${environment}}${placement}`, "\\centering"];
+      const options = node.graphicsOptions !== undefined ? `[${node.graphicsOptions}]` : `[width=${width}]`;
+      lines.push(`\\includegraphics${options}{${node.path}}`);
       if (node.caption) lines.push(`\\caption{${escapeLatexFreeText(node.caption)}}`);
       if (node.label) lines.push(`\\label{${node.label}}`);
-      lines.push("\\end{figure}");
+      lines.push(`\\end{${environment}}`);
       return lines.join("\n");
     }
     case "algorithm": {
@@ -241,10 +249,12 @@ function writeTable(table: TableNode): string {
       return a === "center" ? "c" : a === "right" ? "r" : "l";
     }).join("");
   const placement = table.placement ? `[${table.placement}]` : "[htbp]";
-  const lines: string[] = [`\\begin{table}${placement}`, "\\centering"];
+  const environment = table.environment ?? "table";
+  const tabular = table.tabularEnvironment ?? "tabular";
+  const lines: string[] = [`\\begin{${environment}}${placement}`, "\\centering"];
   if (table.caption) lines.push(`\\caption{${escapeLatexFreeText(table.caption)}}`);
   if (table.label) lines.push(`\\label{${table.label}}`);
-  lines.push(`\\begin{tabular}{${columnSpec}}`);
+  lines.push(`\\begin{${tabular}}${tabular === "tabular*" ? `{${table.tabularWidth ?? "\\textwidth"}}` : ""}{${columnSpec}}`);
   if (table.booktabs) lines.push("\\toprule");
   else lines.push("\\hline");
   table.rows.forEach((row, rowIdx) => {
@@ -264,8 +274,8 @@ function writeTable(table: TableNode): string {
     if (!table.booktabs && rowIdx === table.rows.length - 1) lines.push("\\hline");
   });
   if (table.booktabs) lines.push("\\bottomrule");
-  lines.push("\\end{tabular}");
-  lines.push("\\end{table}");
+  lines.push(`\\end{${tabular}}`);
+  lines.push(`\\end{${environment}}`);
   return lines.join("\n");
 }
 
@@ -287,9 +297,10 @@ function writeInline(node: ScholarInlineNode): string {
     case "link":
       if (node.kind === "wikilink") {
         // Obsidian note links are not URLs; degrade to plain text (kept verbatim).
-        return node.alias ?? node.target;
+        return escapeLatexText(node.alias ?? node.target);
       }
-      return `\\href{${node.target}}{${node.alias ?? node.target}}`;
+      return `\\href{${escapeLatexUrl(node.target)}}{${node.children
+        ? node.children.map(writeInline).join("") : escapeLatexText(node.alias ?? node.target)}}`;
     case "citation":
       return node.raw;
     case "inline-raw":
@@ -297,6 +308,12 @@ function writeInline(node: ScholarInlineNode): string {
     default:
       return "";
   }
+}
+
+function escapeLatexUrl(target: string): string {
+  return target.replace(/[\\{}%#]/g, (ch) => ({
+    "\\": "\\%5C", "{": "\\%7B", "}": "\\%7D", "%": "\\%", "#": "\\#",
+  })[ch]!);
 }
 
 /** Escape plain text only; structured math/commands are separate nodes. */

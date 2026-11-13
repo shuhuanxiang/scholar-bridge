@@ -9,8 +9,8 @@ import type { BlockDiff } from "./structural-diff";
  *
  * Safety contract (PRODUCT_REQUIREMENTS.md §5: never rewrite uncertain
  * source): a change is applied only when its old-side block can be located
- * VERBATIM in the old file — the block is re-serialized from the Scholar IR
- * and matched against the document with whitespace-insensitive comparison.
+ * VERBATIM at its captured source range in an unchanged document. Legacy IR
+ * without a document snapshot uses conservative serialized-block matching.
  * Changes whose old block cannot be located (hand-edited formatting, exotic
  * input) are skipped and reported; nothing else is touched. Unaccepted
  * content always stays byte-identical: only located regions are replaced,
@@ -92,6 +92,17 @@ export function applyAcceptedChangesToLines(
   accepted: Set<number>,
 ): DiffApplyResult {
   if (accepted.size === 0) return { text: lines.join("\n"), applied: [], skipped: [] };
+  const snapshot = blocks.find((block) => block.sourceSnapshot !== undefined)?.sourceSnapshot;
+  if (snapshot !== undefined && snapshot !== lines.join("\n")) {
+    return {
+      text: lines.join("\n"), applied: [],
+      skipped: [...accepted].filter((index) => blocks[index] && blocks[index].status !== "equal")
+        .map((index) => ({ index, reason: "the note changed since comparison; compare again before applying" })),
+    };
+  }
+  // Parser source ranges use LF; restore uniform CRLF only after rebuilding.
+  const crlf = lines.length > 1 && lines.slice(0, -1).every((line) => line.endsWith("\r"));
+  if (crlf) lines = lines.map((line, index) => index < lines.length - 1 ? line.slice(0, -1) : line);
   // Index of every non-empty line, in order — the matching substrate.
   const nonEmpty: { line: number; text: string }[] = [];
   for (let i = 0; i < lines.length; i++) {
@@ -113,7 +124,16 @@ export function applyAcceptedChangesToLines(
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
     let region: LocatedRegion | null = null;
-    if (block.oldNode) {
+    if (block.oldNode && snapshot !== undefined) {
+      const source = block.oldNode.source;
+      if (source?.format === "markdown" && source.startLine !== undefined && source.endLine !== undefined &&
+        source.endLine - source.startLine < MAX_PATTERN_LINES &&
+        source.startLine > lastEndLine &&
+        lines.slice(source.startLine, source.endLine + 1).join("\n") === source.raw) {
+        region = { start: source.startLine, end: source.endLine };
+        lastEndLine = region.end;
+      }
+    } else if (block.oldNode) {
       const pattern = serializeBlockLines(block.oldNode).map(norm).filter((s) => s.length > 0);
       if (pattern.length > 0 && pattern.length <= MAX_PATTERN_LINES) {
         const found = locatePattern(nonEmpty, cursor, pattern);
@@ -145,6 +165,8 @@ export function applyAcceptedChangesToLines(
       region,
       newLines: block.status === "removed" || !block.newNode
         ? []
+        : snapshot !== undefined && block.newNode.source?.raw !== undefined
+        ? trimBlankEdges(block.newNode.source.raw.split("\n"))
         : serializeBlockLines(block.newNode),
     });
     if (accepted.has(i) && block.status !== "equal" && block.status !== "added" && !region) {
@@ -161,9 +183,21 @@ export function applyAcceptedChangesToLines(
   const out: string[] = [];
   let copyFrom = 0; // next old line to copy verbatim
   let pendingAdds: LocatedBlock[] = [];
+  const unanchoredAdds = new Set<number>();
+  for (const ordered of [located, [...located].reverse()]) {
+    let neighbor: LocatedBlock | null = null;
+    for (const block of ordered) {
+      if (block.block.oldNode) neighbor = block;
+      else if (block.block.status === "added" && neighbor && !neighbor.region) unanchoredAdds.add(block.index);
+    }
+  }
 
   const emitAdd = (add: LocatedBlock): void => {
     if (!accepted.has(add.index)) return;
+    if (unanchoredAdds.has(add.index)) {
+      skipped.push({ index: add.index, reason: "the addition's neighboring source block could not be located safely" });
+      return;
+    }
     applied.push(add.index);
     if (add.newLines.length === 0) return;
     // Blank-line separation from whatever precedes (the gap copy or a
@@ -188,7 +222,7 @@ export function applyAcceptedChangesToLines(
       // Copy the untouched gap in front of this block, then any adds queued
       // for that gap, then the block itself.
       for (let i = copyFrom; i < rStart; i++) out.push(lines[i]);
-      const hasAdds = pendingAdds.some((add) => accepted.has(add.index) && add.newLines.length > 0);
+      const hasAdds = pendingAdds.some((add) => accepted.has(add.index) && !unanchoredAdds.has(add.index) && add.newLines.length > 0);
       for (const add of pendingAdds) emitAdd(add);
       pendingAdds = [];
       if (hasAdds && !isDelete && out.length > 0 && out[out.length - 1].trim()) out.push("");
@@ -214,13 +248,7 @@ export function applyAcceptedChangesToLines(
   for (let i = copyFrom; i < lines.length; i++) out.push(lines[i]);
   for (const add of pendingAdds) emitAdd(add);
 
-  // Cosmetic cleanup: a deletion can leave a run of blank lines at EOF;
-  // collapse it to the single trailing newline marker ("" as last element).
-  while (out.length > 1 && !out[out.length - 1].trim() && !out[out.length - 2].trim()) {
-    out.pop();
-  }
-
-  return { text: out.join("\n"), applied, skipped };
+  return { text: out.join(crlf ? "\r\n" : "\n"), applied, skipped };
 }
 
 /**

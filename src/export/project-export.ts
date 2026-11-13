@@ -59,23 +59,45 @@ export async function exportFolderToLatex(
     throw new Error(`overwrite confirmation required: ${existing.join(", ")}`);
   }
 
-  await ensureFolder(app, plan.outDir);
-  await ensureFolder(app, plan.sectionsDir);
-
   const packages = new Set<string>();
+  const outputs: { path: string; content: string }[] = [];
+  let original: { preamble: string; packages: string[] } | undefined;
   for (let i = 0; i < mdFiles.length; i++) {
     const doc = prepareExportAssets(app, parseMarkdown(await app.vault.read(mdFiles[i])), mdFiles[i], plan.outDir);
+    if (doc.metadata?.preambleConflict) throw new Error(`conflicting LaTeX preambles in ${mdFiles[i].path}`);
+    if (typeof doc.metadata?.latexPreamble === "string") {
+      if (original && original.preamble !== doc.metadata.latexPreamble) {
+        throw new Error("project notes have different LaTeX preambles; export them separately or use one shared preamble");
+      }
+      original = {
+        preamble: doc.metadata.latexPreamble,
+        packages: Array.isArray(doc.metadata.packages) ? doc.metadata.packages.filter((pkg): pkg is string => typeof pkg === "string") : [],
+      };
+    }
     for (const pkg of detectPackages(doc)) packages.add(pkg);
     const tex = writeLatexFragment(doc);
-    await writeFile(app, normalizePath(plan.sectionFiles[i]), tex);
+    outputs.push({ path: normalizePath(plan.sectionFiles[i]), content: tex });
   }
-  await writeFile(app, normalizePath(plan.mainTex), buildMainTex(profile, [...packages], basenames));
+  outputs.push({
+    path: normalizePath(plan.mainTex),
+    content: buildMainTex(profile, [...packages], basenames, original, mdFiles.map((file) => file.path)),
+  });
+  for (const output of outputs) {
+    if (app.vault.getAbstractFileByPath(output.path) instanceof TFolder) {
+      throw new Error(`a folder already occupies the output path: ${output.path}`);
+    }
+  }
+  await ensureFolder(app, plan.outDir);
+  await ensureFolder(app, plan.sectionsDir);
+  for (const output of outputs) await writeFile(app, output.path, output.content);
 
   return plan;
 }
 
 async function ensureFolder(app: App, path: string): Promise<void> {
-  if (app.vault.getAbstractFileByPath(path)) return;
+  const existing = app.vault.getAbstractFileByPath(path);
+  if (existing instanceof TFolder) return;
+  if (existing) throw new Error(`a file already occupies the output folder: ${path}`);
   await app.vault.createFolder(path);
 }
 

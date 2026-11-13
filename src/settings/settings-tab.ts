@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
 import { t } from "../i18n";
-import type { ScholarBridgeSettings } from "./settings";
+import { LLAMA_NUMBER_RULES, parseLlamaNumber, type LlamaNumberKey, type ScholarBridgeSettings } from "./settings";
 import { parseGlossaryYaml } from "./glossary-yaml";
 
 export class ScholarBridgeSettingTab extends PluginSettingTab {
@@ -60,73 +60,15 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
         this.onChange();
       }),
     );
-    new Setting(containerEl).setName(t("Port")).addText((t) =>
-      t.setValue(String(this.settings.llama.port)).onChange(async (v) => {
-        const port = Number.parseInt(v, 10);
-        if (Number.isFinite(port) && port > 0 && port < 65536) {
-          this.settings.llama.port = port;
-          this.onChange();
-        }
-      }),
-    );
-    new Setting(containerEl)
-      .setName(t("GPU layers"))
-      .setDesc(t("Number of layers to offload to the GPU (0 = CPU only)."))
-      .addText((t) =>
-        t.setValue(String(this.settings.llama.gpuLayers)).onChange(async (v) => {
-          const n = Number.parseInt(v, 10);
-          if (Number.isFinite(n) && n >= 0) {
-            this.settings.llama.gpuLayers = n;
-            this.onChange();
-          }
-        }),
-      );
-    new Setting(containerEl).setName(t("Context size")).addText((t) =>
-      t.setValue(String(this.settings.llama.contextSize)).onChange(async (v) => {
-        const n = Number.parseInt(v, 10);
-        if (Number.isFinite(n) && n > 0) {
-          this.settings.llama.contextSize = n;
-          this.onChange();
-        }
-      }),
-    );
-    new Setting(containerEl).setName(t("Temperature")).addText((t) =>
-      t.setValue(String(this.settings.llama.temperature)).onChange(async (v) => {
-        const n = Number.parseFloat(v);
-        if (Number.isFinite(n) && n >= 0) {
-          this.settings.llama.temperature = n;
-          this.onChange();
-        }
-      }),
-    );
-    new Setting(containerEl)
-      .setName(t("Idle shutdown (minutes)"))
-      .setDesc(t("Stop the local server after this many idle minutes; 0 keeps it running."))
-      .addText((t) =>
-        t
-          .setValue(String(this.settings.llama.idleShutdownMinutes))
-          .onChange(async (v) => {
-            const n = Number.parseInt(v, 10);
-            if (Number.isFinite(n) && n >= 0) {
-              this.settings.llama.idleShutdownMinutes = n;
-              this.onChange();
-            }
-          }),
-      );
-    new Setting(containerEl)
-      .setName(t("Request timeout (ms)"))
-      .setDesc(t("Abort a translation request after this many milliseconds (minimum 1000)."))
-      .addText((t) =>
-        t
-          .setValue(String(this.settings.llama.requestTimeoutMs))
-          .onChange(async (v) => {
-            const n = Number.parseInt(v, 10);
-            if (Number.isFinite(n) && n >= 1000) {
-              this.settings.llama.requestTimeoutMs = n;
-              this.onChange();
-            }
-          }),
-      );
+    this.numberSetting(containerEl, "port", "Port");
+    this.numberSetting(containerEl, "gpuLayers", "GPU layers", "Number of layers to offload to the GPU (0 = CPU only).");
+    this.numberSetting(containerEl, "contextSize", "Context size");
+    this.numberSetting(containerEl, "temperature", "Temperature");
+    this.numberSetting(containerEl, "topP", "Top p", "Nucleus sampling probability, from 0 to 1.");
+    this.numberSetting(containerEl, "topK", "Top k", "Number of token candidates to sample from; 0 disables top-k sampling.");
+    this.numberSetting(containerEl, "maxTokens", "Maximum output tokens", "Maximum generated tokens per request, including JSON; 0 uses the server default.");
+    this.numberSetting(containerEl, "idleShutdownMinutes", "Idle shutdown (minutes)", "Stop the local server after this many idle minutes; 0 keeps it running.");
+    this.numberSetting(containerEl, "requestTimeoutMs", "Request timeout (ms)", "Abort a translation request after this many milliseconds (minimum 1000).");
     new Setting(containerEl)
       .setName(t("Confirm server start"))
       .setDesc(t("Ask before spawning the local llama-server process."))
@@ -178,6 +120,16 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
           this.onChange();
         }),
     );
+    new Setting(containerEl)
+      .setName(t("Custom translation prompt"))
+      .setDesc(t("Leave empty for the default prompt. Language, style, glossary, JSON and placeholder rules are added automatically."))
+      .addTextArea((t) => {
+        t.inputEl.rows = 6;
+        t.setValue(this.settings.customPrompt).onChange(async (v) => {
+          this.settings.customPrompt = v;
+          this.onChange();
+        });
+      });
     new Setting(containerEl).setName(t("Write mode")).addDropdown((d) =>
       d
         .addOptions({
@@ -241,6 +193,28 @@ export class ScholarBridgeSettingTab extends PluginSettingTab {
           }),
         );
     }
+  }
+
+  private numberSetting(container: HTMLElement, key: LlamaNumberKey, label: string, description?: string): void {
+    const rule = LLAMA_NUMBER_RULES[key];
+    const setting = new Setting(container).setName(t(label));
+    if (description) setting.setDesc(t(description));
+    setting.addText((control) => {
+      control.inputEl.type = "number";
+      control.inputEl.min = String(rule.min);
+      control.inputEl.max = String(rule.max);
+      control.inputEl.step = rule.integer ? "1" : "any";
+      control.setValue(String(this.settings.llama[key])).onChange((text) => {
+        const value = parseLlamaNumber(key, text);
+        control.inputEl.setCustomValidity(value === null
+          ? t("Enter a value between {{min}} and {{max}}.", { min: rule.min, max: rule.max }) : "");
+        control.inputEl.setAttribute("aria-invalid", String(value === null));
+        if (value === null) return;
+        this.settings.llama[key] = value;
+        this.onChange();
+      });
+      control.inputEl.addEventListener("blur", () => control.inputEl.reportValidity());
+    });
   }
 }
 

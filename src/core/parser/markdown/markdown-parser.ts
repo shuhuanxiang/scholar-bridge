@@ -1,6 +1,7 @@
 import { IdAllocator, makeDocument } from "../../ir/document";
 import {
   decodeMetaComment,
+  decodeTranslationText,
   scanTranslationMarkers,
   type ScholarBridgeMeta,
 } from "../../ir/metadata";
@@ -25,8 +26,9 @@ export function parseMarkdown(input: string): ScholarDocument {
   const ids = new IdAllocator();
   const { yaml, body } = stripFrontmatter(input);
   const bodyStartLine = input.slice(0, input.length - body.length).split(/\r?\n/).length - 1;
-  const children = parseBlocks(body, ids, bodyStartLine);
-  return makeDocument(children, yaml ? { yaml } : undefined);
+  const metadata: Record<string, unknown> = yaml !== undefined ? { yaml } : {};
+  const children = parseBlocks(body, ids, bodyStartLine, metadata);
+  return makeDocument(children, Object.keys(metadata).length ? metadata : undefined);
 }
 
 function stripFrontmatter(input: string): { yaml?: string; body: string } {
@@ -35,7 +37,7 @@ function stripFrontmatter(input: string): { yaml?: string; body: string } {
   return { yaml: m[1], body: input.slice(m[0].length) };
 }
 
-function parseBlocks(input: string, ids: IdAllocator, lineOffset?: number): ScholarBlockNode[] {
+function parseBlocks(input: string, ids: IdAllocator, lineOffset?: number, documentMetadata?: Record<string, unknown>): ScholarBlockNode[] {
   const lines = input.split(/\r?\n/);
   const blocks: ScholarBlockNode[] = [];
   const markers = new Map(scanTranslationMarkers(lines).markers.map((marker) => [marker.startLine, marker]));
@@ -72,7 +74,7 @@ function parseBlocks(input: string, ids: IdAllocator, lineOffset?: number): Scho
         id: ids.next("translation-block"),
         type: "translation-block",
         meta: marker.meta,
-        text: lines.slice(marker.contentStartLine, marker.endLine).join("\n"),
+        text: decodeTranslationText(marker.meta, lines.slice(marker.contentStartLine, marker.endLine).join("\n")),
       });
       continue;
     }
@@ -107,7 +109,32 @@ function parseBlocks(input: string, ids: IdAllocator, lineOffset?: number): Scho
       const inner = comment.replace(/^\s*<!--/, "").replace(/-->\s*$/, "");
 
       const meta = decodeMetaComment(inner);
-      if (meta && applyMetaToPrevious(meta, blocks)) continue;
+      if (meta?.type === "document" && meta.schemaVersion === 1 && documentMetadata &&
+        typeof meta.latexPreamble === "string") {
+        if (typeof documentMetadata.latexPreamble === "string" && documentMetadata.latexPreamble !== meta.latexPreamble) {
+          documentMetadata.preambleConflict = true;
+          push({ id: ids.next("raw-html"), type: "raw-html", raw: comment, reason: "conflicting LaTeX preamble" });
+          continue;
+        }
+        for (const key of ["latexPreamble", "latexEpilogue", "documentClass", "title", "author"] as const) {
+          if (typeof meta[key] === "string") documentMetadata[key] = meta[key];
+        }
+        if (Array.isArray(meta.packages) && meta.packages.every((item) => typeof item === "string")) {
+          documentMetadata.packages = meta.packages;
+        }
+        continue;
+      }
+      if (meta && applyMetaToPrevious(meta, blocks)) {
+        let previous: ScholarBlockNode | undefined;
+        for (let k = blocks.length - 1; k >= 0; k--) {
+          if (blocks[k].type !== "translation-block") { previous = blocks[k]; break; }
+        }
+        if (previous?.source && lineOffset !== undefined && previous.source.startLine !== undefined) {
+          previous.source.endLine = lineOffset + i - 1;
+          previous.source.raw = lines.slice(previous.source.startLine - lineOffset, i).join("\n");
+        }
+        continue;
+      }
       push({ id: ids.next("raw-html"), type: "raw-html", raw: comment, reason: meta ? "orphan scholarbridge metadata" : "html comment" });
       continue;
     }
@@ -523,6 +550,7 @@ function makeGfmTable(
 
 /** Parse a ScholarBridge-generated HTML table back into a TableNode. */
 export function parseHtmlTable(html: string, ids: IdAllocator): TableNode | null {
+  if (!isSupportedHtmlTable(html)) return null;
   const captionMatch = /<caption[^>]*>([\s\S]*?)<\/caption>/i.exec(html);
   const rows: TableCell[][] = [];
   for (const rowMatch of html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
@@ -553,6 +581,48 @@ export function parseHtmlTable(html: string, ids: IdAllocator): TableNode | null
     rows: resolveHtmlSpans(rows),
     ...(captionMatch ? { caption: stripTags(captionMatch[1]).trim() } : {}),
   };
+}
+
+function isSupportedHtmlTable(html: string): boolean {
+  const inlineTags = new Set(["strong", "b", "em", "i", "code", "a", "br"]);
+  const containers: Record<string, string[]> = {
+    table: ["caption", "thead", "tbody", "tfoot", "tr"],
+    thead: ["tr"], tbody: ["tr"], tfoot: ["tr"], tr: ["td", "th"],
+  };
+  const stack: string[] = [];
+  let cursor = 0;
+  let roots = 0;
+  for (const match of html.matchAll(/<(\/?)([a-z][\w-]*)([^<>]*)>/gi)) {
+    const parent = stack.at(-1);
+    const text = html.slice(cursor, match.index);
+    if (text.includes("<") || (text.trim() && (!parent || parent in containers))) return false;
+    const tag = match[2].toLowerCase();
+    const attrs = match[3].replace(/\/\s*$/, "").trim();
+    if (match[1]) {
+      if (attrs || stack.pop() !== tag) return false;
+    } else {
+      if (!parent) {
+        if (tag !== "table" || roots++) return false;
+      } else if (parent in containers) {
+        if (!containers[parent].includes(tag)) return false;
+      } else if (!inlineTags.has(tag)) return false;
+      if (attrs) {
+        const attrPattern = tag === "td" || tag === "th"
+          ? /^(?:(?:rowspan|colspan)\s*=\s*(?:"\d+"|'\d+'|\d+)|align\s*=\s*(?:"(?:left|center|right)"|'(?:left|center|right)'|left|center|right))(?:\s+|$)/i
+          : tag === "a" ? /^href\s*=\s*(?:"[^"]*"|'[^']*')(?:\s+|$)/i : null;
+        if (!attrPattern) return false;
+        let remaining = attrs;
+        while (remaining) {
+          const attr = attrPattern.exec(remaining);
+          if (!attr) return false;
+          remaining = remaining.slice(attr[0].length).trim();
+        }
+      }
+      if (tag !== "br") stack.push(tag);
+    }
+    cursor = match.index + match[0].length;
+  }
+  return roots === 1 && stack.length === 0 && !html.slice(cursor).trim();
 }
 
 function numAttr(attrs: string, name: string): number | undefined {
@@ -603,11 +673,8 @@ function htmlToMarkdownInline(html: string): string {
 function stripTags(html: string): string {
   return html
     .replace(/<[^>]+>/g, "")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+    .replace(/&(amp|lt|gt|quot|#39);/g, (_, entity: string) =>
+      ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" })[entity]!);
 }
 
 function readHtmlComment(lines: string[], start: number): { body: string; next: number } {
@@ -636,12 +703,17 @@ function applyMetaToPrevious(meta: ScholarBridgeMeta, blocks: ScholarBlockNode[]
         if (typeof meta.label === "string" && !node.label) node.label = meta.label;
         return true;
       case "figure":
+        if (meta.environment === "figure" || meta.environment === "figure*") node.environment = meta.environment;
+        if (typeof meta.graphicsOptions === "string") node.graphicsOptions = meta.graphicsOptions;
         if (typeof meta.caption === "string") node.caption = meta.caption;
         if (typeof meta.label === "string") node.label = meta.label;
         if (typeof meta.latexWidth === "string") node.latexWidth = meta.latexWidth;
         if (typeof meta.placement === "string") node.placement = meta.placement;
         return true;
       case "table":
+        if (meta.environment === "table" || meta.environment === "table*") node.environment = meta.environment;
+        if (meta.tabularEnvironment === "tabular" || meta.tabularEnvironment === "tabular*") node.tabularEnvironment = meta.tabularEnvironment;
+        if (typeof meta.tabularWidth === "string") node.tabularWidth = meta.tabularWidth;
         if (typeof meta.caption === "string") node.caption = meta.caption;
         if (typeof meta.label === "string") node.label = meta.label;
         if (typeof meta.columnSpec === "string") node.columnSpec = meta.columnSpec;

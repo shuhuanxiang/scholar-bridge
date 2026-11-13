@@ -14,6 +14,7 @@ import { moment } from "obsidian";
  */
 
 const zh: Record<string, string> = {
+  "Enter a value between {{min}} and {{max}}.": "请输入 {{min}} 到 {{max}} 之间的数值。",
   // main.ts
   "ScholarBridge {{v}} — scaffold loaded (desktop-only).":
     "ScholarBridge {{v}}——已加载（仅桌面端）。",
@@ -175,6 +176,14 @@ const zh: Record<string, string> = {
   "Number of layers to offload to the GPU (0 = CPU only).": "卸载到 GPU 的层数（0 = 仅用 CPU）。",
   "Context size": "上下文大小",
   "Temperature": "温度",
+  "Top p": "Top p",
+  "Nucleus sampling probability, from 0 to 1.": "核采样概率，范围为 0 到 1。",
+  "Top k": "Top k",
+  "Number of token candidates to sample from; 0 disables top-k sampling.":
+    "参与采样的候选 token 数量；0 表示禁用 top-k 采样。",
+  "Maximum output tokens": "最大输出 token",
+  "Maximum generated tokens per request, including JSON; 0 uses the server default.":
+    "每次请求最多生成的 token 数，包含 JSON 格式开销；0 表示使用服务端默认值。",
   "Idle shutdown (minutes)": "空闲自动关闭（分钟）",
   "Stop the local server after this many idle minutes; 0 keeps it running.":
     "本地服务空闲指定分钟后自动停止；0 表示保持运行。",
@@ -194,6 +203,9 @@ const zh: Record<string, string> = {
   "Academic": "学术",
   "Plain": "通俗",
   "Literal": "直译",
+  "Custom translation prompt": "自定义翻译提示词",
+  "Leave empty for the default prompt. Language, style, glossary, JSON and placeholder rules are added automatically.":
+    "留空使用默认提示词。语言、风格、术语表、JSON 输出及占位符规则会自动补充。",
   "Write mode": "写入模式",
   "Insert below source": "插入到原文下方",
   "Replace source": "替换原文",

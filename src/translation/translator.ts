@@ -3,6 +3,7 @@ import { blockComparableText } from "../diff/node-text";
 import type { TranslationProvider, TranslationRequest } from "./provider";
 import { ProviderError } from "./provider";
 import { cacheKey, type TranslationCache } from "./cache";
+import { estimateRequestTokens } from "./prompt";
 import {
   protectBlock,
   relevantGlossary,
@@ -20,7 +21,7 @@ import {
  * note (TEST_PLAN §10–§11).
  */
 
-export const PROMPT_VERSION = "v2";
+export const PROMPT_VERSION = "v4";
 
 export interface TranslatableBlock {
   nodeId: string;
@@ -60,6 +61,10 @@ export interface TranslateBlocksOptions {
   glossary?: Record<string, string>;
   glossaryVersion?: string;
   temperature?: number;
+  topP?: number;
+  topK?: number;
+  maxTokens?: number;
+  customPrompt?: string;
   signal?: AbortSignal;
   contextSize?: number;
   /**
@@ -123,6 +128,7 @@ export async function translateBlocks(
   opts: TranslateBlocksOptions & { sourceLanguage: string; targetLanguage: string; style: string },
 ): Promise<{ blocks: TranslatedBlock[]; model: string; problems?: string[] }> {
   if (blocks.length === 0) return { blocks: [], model: "none" };
+  opts.signal?.throwIfAborted();
 
   const glossary = opts.glossary ?? {};
   const resolvedGlossaryVersion = opts.glossaryVersion ?? glossaryVersion(glossary);
@@ -139,6 +145,10 @@ export async function translateBlocks(
         targetLanguage: opts.targetLanguage,
         style: opts.style,
         temperature: opts.temperature,
+        topP: opts.topP,
+        topK: opts.topK,
+        maxTokens: opts.maxTokens,
+        customPrompt: opts.customPrompt,
         modelIdentity: opts.modelIdentity ?? "",
         promptVersion: PROMPT_VERSION,
         glossaryVersion: resolvedGlossaryVersion,
@@ -170,7 +180,19 @@ export async function translateBlocks(
   const prepared = pending.flatMap((b): PreparedBlock[] => {
     const protection = protectBlock(b.sourceText, { glossary });
     const relevant = relevantGlossary(b.sourceText, glossary, { placeholders: protection.placeholders });
-    const pieces = splitProtectedText(protection.protectedText, budget, opts.targetLanguage);
+    let pieceBudget = budget;
+    let pieces = splitProtectedText(protection.protectedText, pieceBudget, opts.targetLanguage);
+    // A long prompt or glossary reduces the space available for every piece.
+    while (opts.contextSize && pieces.some((piece, index) => estimateRequestTokens({
+      ...opts, glossary: relevant,
+      blocks: [{ id: `${b.nodeId}__part_${index + 1}`, text: piece.text }],
+    }) > opts.contextSize!)) {
+      if (pieceBudget === 1) {
+        throw new ProviderError("config", "translation exceeds the context budget; increase context size or reduce the prompt, glossary or output limit");
+      }
+      pieceBudget = Math.max(1, Math.floor(pieceBudget / 2));
+      pieces = splitProtectedText(protection.protectedText, pieceBudget, opts.targetLanguage);
+    }
     return pieces.map((piece, index) => {
       let nodeId = b.nodeId;
       if (pieces.length > 1) {
@@ -203,7 +225,8 @@ export async function translateBlocks(
   let size = 0;
   for (const p of prepared) {
     const len = p.protection.protectedText.length;
-    if (current.length > 0 && size + len > budget) {
+    if (current.length > 0 && (size + len > budget ||
+      (opts.contextSize && estimateRequestTokens(chunkRequest([...current, p], opts)) > opts.contextSize))) {
       chunks.push(current);
       current = [];
       size = 0;
@@ -218,6 +241,7 @@ export async function translateBlocks(
   let model = "none";
   let cacheDirty = false;
   const runChunk = async (chunk: PreparedBlock[]): Promise<void> => {
+    opts.signal?.throwIfAborted();
     const res = await translateOneChunk(provider, chunk, opts, resolvedGlossaryVersion);
     blocksOut.push(...res.blocks);
     model = res.model;
@@ -276,6 +300,10 @@ export async function translateBlocks(
         targetLanguage: opts.targetLanguage,
         style: opts.style,
         temperature: opts.temperature,
+        topP: opts.topP,
+        topK: opts.topK,
+        maxTokens: opts.maxTokens,
+        customPrompt: opts.customPrompt,
         modelIdentity: opts.modelIdentity ?? "",
         promptVersion: PROMPT_VERSION,
         glossaryVersion: resolvedGlossaryVersion,
@@ -295,16 +323,13 @@ async function translateOneChunk(
   opts: TranslateBlocksOptions & { sourceLanguage: string; targetLanguage: string; style: string },
   resolvedGlossaryVersion: string,
 ): Promise<{ blocks: TranslatedBlock[]; model: string }> {
-  const request: TranslationRequest = {
-    blocks: prepared.map((p) => ({ id: p.block.nodeId, text: p.protection.protectedText })),
-    sourceLanguage: opts.sourceLanguage,
-    targetLanguage: opts.targetLanguage,
-    style: opts.style,
-    temperature: opts.temperature,
-    glossary: Object.fromEntries(prepared.flatMap((piece) => Object.entries(piece.relevant))),
-  };
+  const request = chunkRequest(prepared, opts);
+  if (opts.contextSize && estimateRequestTokens(request) > opts.contextSize) {
+    throw new ProviderError("config", "translation exceeds the context budget");
+  }
 
   const result = await provider.translate(request, opts.signal);
+  opts.signal?.throwIfAborted();
 
   // §12 validation: same ids, no unknowns, same count.
   const requestedIds = new Set(request.blocks.map((b) => b.id));
@@ -339,6 +364,24 @@ async function translateOneChunk(
     };
   });
   return { blocks: blocksOut, model: result.model };
+}
+
+function chunkRequest(
+  prepared: PreparedBlock[],
+  opts: TranslateBlocksOptions & { sourceLanguage: string; targetLanguage: string; style: string },
+): TranslationRequest {
+  return {
+    blocks: prepared.map((p) => ({ id: p.block.nodeId, text: p.protection.protectedText })),
+    sourceLanguage: opts.sourceLanguage,
+    targetLanguage: opts.targetLanguage,
+    style: opts.style,
+    temperature: opts.temperature,
+    topP: opts.topP,
+    topK: opts.topK,
+    maxTokens: opts.maxTokens,
+    customPrompt: opts.customPrompt,
+    glossary: Object.fromEntries(prepared.flatMap((piece) => Object.entries(piece.relevant))),
+  };
 }
 
 /** Split only between complete tokens; each parent is returned all-or-nothing. */

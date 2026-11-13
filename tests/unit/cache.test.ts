@@ -22,6 +22,10 @@ describe("cache key (R3 P3-2: dual-lane 64-bit hash)", () => {
       { ...base, sourceLanguage: "en", targetLanguage: "zh" },
       { ...base, style: "plain" },
       { ...base, temperature: 0.7 },
+      { ...base, topP: 0.8 },
+      { ...base, topK: 20 },
+      { ...base, maxTokens: 2048 },
+      { ...base, customPrompt: "Use concise terminology." },
       { ...base, modelIdentity: "models/other.gguf" },
       { ...base, promptVersion: "p2" },
       { ...base, glossaryVersion: "g2" },
@@ -44,6 +48,13 @@ describe("cache key (R3 P3-2: dual-lane 64-bit hash)", () => {
       cacheKey({ ...base, temperature: 0 }),
     ]);
     expect(keys.size).toBe(2);
+  });
+
+  it("normalizes blank prompts and server-default output limits", () => {
+    expect(cacheKey({ ...base, customPrompt: " \n ", maxTokens: 0 })).toBe(cacheKey(base));
+    expect(cacheKey({ ...base, customPrompt: " concise \n" }))
+      .toBe(cacheKey({ ...base, customPrompt: "concise" }));
+    expect(cacheKey({ ...base, topP: 0, topK: 0 })).not.toBe(cacheKey(base));
   });
 });
 

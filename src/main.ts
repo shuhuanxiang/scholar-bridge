@@ -36,6 +36,7 @@ import {
  * - no model startup here: `onload()` must stay cheap.
  */
 export default class ScholarBridgePlugin extends Plugin {
+  readonly lifetime = new AbortController();
   settings: ScholarBridgeSettings = structuredClone(DEFAULT_SETTINGS);
   /** Owned llama-server process; created lazily on explicit user action. */
   serverManager: LlamaServerManager | null = null;
@@ -55,6 +56,7 @@ export default class ScholarBridgePlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    if (this.lifetime.signal.aborted) return;
     this.addSettingTab(
       new ScholarBridgeSettingTab(this.app, this, this.settings, () =>
         this.saveSettings(),
@@ -73,6 +75,7 @@ export default class ScholarBridgePlugin extends Plugin {
     // exists. onload itself stays cheap; the confirm-spawn dialog still
     // applies, so this is never an unattended process spawn.
     this.app.workspace.onLayoutReady(() => {
+      if (this.lifetime.signal.aborted) return;
       void autoStartTranslatorIfConfigured(this);
     });
 
@@ -101,6 +104,7 @@ export default class ScholarBridgePlugin extends Plugin {
     mode: WriteMode,
     filePath: string,
   ): Promise<void> {
+    this.lifetime.signal.throwIfAborted();
     const view = this.findMarkdownViewByPath(filePath);
     if (!view || !view.file) {
       throw new Error(
@@ -154,6 +158,7 @@ export default class ScholarBridgePlugin extends Plugin {
       };
     });
     await this.app.workspace.revealLeaf(view.leaf);
+    this.lifetime.signal.throwIfAborted();
     if (view.file?.path !== filePath) {
       throw new Error("the note has changed since translation — re-run Translate");
     }
@@ -199,6 +204,7 @@ export default class ScholarBridgePlugin extends Plugin {
    * process never outlives the plugin (Obsidian does not await onunload).
    */
   onunload(): void {
+    this.lifetime.abort();
     void this.settingsSaves.flush();
     const manager = this.serverManager;
     this.serverManager = null;
@@ -221,7 +227,17 @@ export default class ScholarBridgePlugin extends Plugin {
       // Clamp stored numbers: they come from a user-editable data.json and
       // end up in spawn arguments / request URLs.
       llama: sanitizeLlamaSettings({ ...DEFAULT_SETTINGS.llama, ...(stored?.llama ?? {}) }),
-      diff: { ...DEFAULT_SETTINGS.diff, ...(stored?.diff ?? {}) },
+      customPrompt: typeof stored?.customPrompt === "string" ? stored.customPrompt : "",
+      autoStartTranslator: stored?.autoStartTranslator === true,
+      pasteMode: stored?.pasteMode && ["auto", "ask", "never"].includes(stored.pasteMode) ? stored.pasteMode : DEFAULT_SETTINGS.pasteMode,
+      writeMode: stored?.writeMode && ["insert-below", "replace", "translated-copy", "bilingual"].includes(stored.writeMode) ? stored.writeMode : DEFAULT_SETTINGS.writeMode,
+      translationStyle: stored?.translationStyle && ["academic", "plain", "literal"].includes(stored.translationStyle) ? stored.translationStyle : DEFAULT_SETTINGS.translationStyle,
+      sourceLanguage: typeof stored?.sourceLanguage === "string" && stored.sourceLanguage.trim() ? stored.sourceLanguage : DEFAULT_SETTINGS.sourceLanguage,
+      targetLanguage: typeof stored?.targetLanguage === "string" && stored.targetLanguage.trim() ? stored.targetLanguage : DEFAULT_SETTINGS.targetLanguage,
+      diff: Object.fromEntries(Object.entries(DEFAULT_SETTINGS.diff).map(([key, fallback]) => {
+        const value = stored?.diff?.[key as keyof ScholarBridgeSettings["diff"]];
+        return [key, typeof value === "boolean" ? value : fallback];
+      })) as ScholarBridgeSettings["diff"],
       // A corrupted/hand-edited data.json must not degrade the glossary into
       // a char-indexed object (CODE_REVIEW_R2 P3-3).
       glossary: sanitizeGlossary(stored?.glossary),

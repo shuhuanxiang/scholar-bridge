@@ -1,7 +1,7 @@
 {
   "id": "scholar-bridge",
   "name": "ScholarBridge",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "minAppVersion": "1.8.7",
   "description": "Academic writing bridge: LaTeX ↔ Markdown conversion, Chinese/English/formula-aware diff, and local llama.cpp translation.",
   "author": "Shane Xiang",

@@ -2,7 +2,7 @@ import { ItemView, Notice, TFile, WorkspaceLeaf, FuzzySuggestModal } from "obsid
 import { t } from "../i18n";
 import type ScholarBridgePlugin from "../main";
 import { diffDocuments, type DocumentDiff, type BlockDiff, type InlineChange } from "../diff/structural-diff";
-import { applyAcceptedChanges } from "../diff/diff-apply";
+import { applyAcceptedChanges, serializeBlockLines } from "../diff/diff-apply";
 import { blockComparableText } from "../diff/node-text";
 
 export const DIFF_VIEW_TYPE = "scholar-bridge-diff-view";
@@ -21,6 +21,10 @@ export class DiffView extends ItemView {
   private accepted = new Set<number>();
   /** Guards against out-of-order renders when setFiles is called rapidly. */
   private runId = 0;
+  private applying = false;
+  private applyBar: HTMLElement | null = null;
+  private toggles = new Map<number, HTMLButtonElement>();
+  private rowObserver: IntersectionObserver | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: ScholarBridgePlugin) {
     super(leaf);
@@ -48,11 +52,14 @@ export class DiffView extends ItemView {
     // Invalidate any in-flight computeAndRender(): after its awaits it must
     // not render into the detached contentEl (CODE_REVIEW_R2 P3-4).
     this.runId++;
+    this.rowObserver?.disconnect();
+    this.rowObserver = null;
   }
 
   setFiles(oldFile: TFile, newFile: TFile): void {
     this.oldFile = oldFile;
     this.newFile = newFile;
+    this.result = null;
     this.accepted.clear();
     void this.computeAndRender();
   }
@@ -83,6 +90,7 @@ export class DiffView extends ItemView {
         caseSensitive: d.caseSensitive,
         atomicTerms: Object.keys(this.plugin.settings.glossary),
       });
+      this.accepted.clear();
       if (run !== this.runId) return;
       this.renderResult();
     } catch (err) {
@@ -99,6 +107,10 @@ export class DiffView extends ItemView {
   private renderResult(): void {
     const { contentEl } = this;
     contentEl.empty();
+    this.rowObserver?.disconnect();
+    this.rowObserver = null;
+    this.toggles.clear();
+    this.applyBar = null;
     if (!this.result || !this.oldFile || !this.newFile) return;
 
     const header = contentEl.createDiv("scholar-bridge-diff-header");
@@ -109,56 +121,115 @@ export class DiffView extends ItemView {
       cls: "scholar-bridge-status",
     });
 
-    // v0.3 per-change accept/reject: an Apply bar appears once at least one
-    // change is accepted.
+    this.applyBar = header.createDiv("scholar-bridge-diff-applybar");
+    this.renderApplyBar();
+
+    const grid = contentEl.createDiv("scholar-bridge-diff-grid");
+    const blocks = this.result.blocks;
+    let rendered = 0;
+    const appendRows = (count: number) => {
+      const end = Math.min(blocks.length, rendered + count);
+      while (rendered < end) {
+        grid.append(this.renderBlockPair(blocks[rendered], rendered));
+        rendered++;
+      }
+    };
+    // Defer offscreen rows; toggling acceptance only updates its own controls.
+    if (blocks.length > 200 && typeof IntersectionObserver === "function") {
+      appendRows(100);
+      const sentinel = contentEl.createDiv("scholar-bridge-diff-sentinel");
+      this.rowObserver = new IntersectionObserver((entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        appendRows(100);
+        if (rendered === blocks.length) {
+          this.rowObserver?.disconnect();
+          sentinel.remove();
+        }
+      }, { root: contentEl, rootMargin: "400px" });
+      this.rowObserver.observe(sentinel);
+    } else {
+      appendRows(blocks.length);
+    }
+  }
+
+  private renderApplyBar(): void {
+    const applyBar = this.applyBar;
+    if (!applyBar || !this.oldFile) return;
+    applyBar.empty();
+    applyBar.hidden = this.accepted.size === 0;
     if (this.accepted.size > 0) {
-      const applyBar = header.createDiv("scholar-bridge-diff-applybar");
       applyBar.createEl("span", {
         text: t("{{n}} change(s) accepted", { n: this.accepted.size }),
         cls: "scholar-bridge-status",
       });
-      applyBar
-        .createEl("button", { text: t("Apply to “{{name}}”", { name: this.oldFile.basename }), cls: "mod-cta" })
-        .addEventListener("click", () => void this.applyAccepted());
-      applyBar
-        .createEl("button", { text: t("Clear") })
-        .addEventListener("click", () => {
-          this.accepted.clear();
-          this.renderResult();
-        });
+      const apply = applyBar.createEl("button", { text: t("Apply to “{{name}}”", { name: this.oldFile.basename }), cls: "mod-cta" });
+      apply.disabled = this.applying;
+      apply.addEventListener("click", () => void this.applyAccepted());
+      const clear = applyBar.createEl("button", { text: t("Clear") });
+      clear.disabled = this.applying;
+      clear.addEventListener("click", () => {
+        if (this.applying) return;
+        this.accepted.clear();
+        this.updateAcceptance();
+      });
     }
+  }
 
-    const grid = contentEl.createDiv("scholar-bridge-diff-grid");
-    this.result.blocks.forEach((block, index) => {
-      grid.append(this.renderBlockPair(block, index));
-    });
+  private updateAcceptance(): void {
+    for (const [index, toggle] of this.toggles) {
+      const accepted = this.accepted.has(index);
+      toggle.setText(accepted ? t("Accepted ✓ (click to reject)") : t("Accept change"));
+      toggle.classList.toggle("scholar-bridge-diff-accepted", accepted);
+      toggle.setAttribute("aria-pressed", String(accepted));
+      toggle.disabled = this.applying;
+    }
+    this.renderApplyBar();
   }
 
   /** Apply every accepted change to the old file in one atomic write. */
   private async applyAccepted(): Promise<void> {
-    if (!this.oldFile || !this.result || this.accepted.size === 0) return;
+    if (!this.oldFile || !this.result || this.accepted.size === 0 || this.applying) return;
+    this.applying = true;
+    this.updateAcceptance();
+    const file = this.oldFile;
+    const result = this.result;
+    const run = this.runId;
     const accepted = new Set(this.accepted);
     const blocks = this.result.blocks;
     try {
       let applied: number[] = [];
       let skipped: { index: number; reason: string }[] = [];
-      await this.plugin.app.vault.process(this.oldFile, (text) => {
+      await this.plugin.app.vault.process(file, (text) => {
+        if (this.plugin.lifetime.signal.aborted) throw new Error("plugin unloaded");
+        if (run !== this.runId || this.result !== result || this.oldFile !== file) {
+          throw new Error("comparison changed before the changes could be applied");
+        }
+        for (const leaf of this.plugin.app.workspace.getLeavesOfType("markdown")) {
+          const view = leaf.view as { file?: TFile; editor?: { getValue(): string } };
+          if (view.file?.path === file.path && view.editor && view.editor.getValue() !== text) {
+            throw new Error("the note has unsaved edits; compare again after saving");
+          }
+        }
         const res = applyAcceptedChanges(text, blocks, accepted);
         applied = res.applied;
         skipped = res.skipped;
         return res.text;
       });
+      if (this.result !== result || this.oldFile !== file) return;
       this.accepted.clear();
       if (skipped.length > 0) {
         new Notice(
           t("ScholarBridge: applied {{n}} change(s); skipped {{s}} (original block not found verbatim — the note may have changed).", { n: applied.length, s: skipped.length }),
         );
       } else {
-        new Notice(t("ScholarBridge: applied {{n}} change(s) to {{name}}.", { n: applied.length, name: this.oldFile.basename }));
+        new Notice(t("ScholarBridge: applied {{n}} change(s) to {{name}}.", { n: applied.length, name: file.basename }));
       }
       await this.computeAndRender();
     } catch (err) {
       new Notice(t("ScholarBridge: apply failed — {{msg}}", { msg: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      this.applying = false;
+      this.updateAcceptance();
     }
   }
 
@@ -186,7 +257,11 @@ export class DiffView extends ItemView {
         break;
       }
       case "changed": {
-        if (block.tableChanges) {
+        if (block.oldNode?.type === "code" && block.newNode?.type === "code" &&
+          block.oldNode.language !== block.newNode.language) {
+          left.textContent = serializeBlockLines(block.oldNode).join("\n");
+          right.textContent = serializeBlockLines(block.newNode).join("\n");
+        } else if (block.tableChanges?.some((cell) => cell.status !== "equal")) {
           left.textContent = this.plainOf(block.oldNode);
           right.textContent = this.plainOf(block.newNode);
           const detail = createDiv("scholar-bridge-diff-table");
@@ -204,12 +279,12 @@ export class DiffView extends ItemView {
             if (cell.newText) line.createEl("ins", { text: cell.newText });
           }
           right.append(detail);
-        } else if (block.changes) {
+        } else if (block.changes?.some((change) => change.op !== "equal")) {
           left.append(renderInlineChanges(block.changes, "old"));
           right.append(renderInlineChanges(block.changes, "new"));
         } else {
-          left.textContent = this.plainOf(block.oldNode);
-          right.textContent = this.plainOf(block.newNode);
+          left.textContent = block.oldNode?.source?.raw ?? this.plainOf(block.oldNode);
+          right.textContent = block.newNode?.source?.raw ?? this.plainOf(block.newNode);
         }
         break;
       }
@@ -225,10 +300,17 @@ export class DiffView extends ItemView {
         text: isAccepted ? t("Accepted ✓ (click to reject)") : t("Accept change"),
         cls: isAccepted ? "scholar-bridge-diff-accepted" : undefined,
       });
+      this.toggles.set(index, toggle);
+      toggle.disabled = this.applying;
+      toggle.setAttribute("aria-pressed", String(isAccepted));
       toggle.addEventListener("click", () => {
+        if (this.applying) return;
         if (this.accepted.has(index)) this.accepted.delete(index);
         else this.accepted.add(index);
-        this.renderResult();
+        toggle.setText(this.accepted.has(index) ? t("Accepted ✓ (click to reject)") : t("Accept change"));
+        toggle.classList.toggle("scholar-bridge-diff-accepted", this.accepted.has(index));
+        toggle.setAttribute("aria-pressed", String(this.accepted.has(index)));
+        this.renderApplyBar();
       });
     }
 

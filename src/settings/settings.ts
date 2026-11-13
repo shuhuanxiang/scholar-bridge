@@ -27,6 +27,10 @@ export interface LlamaSettings {
   gpuLayers: number;
   contextSize: number;
   temperature: number;
+  topP: number;
+  topK: number;
+  /** Maximum generated tokens per request; 0 uses the server default. */
+  maxTokens: number;
   /** Idle shutdown timeout in minutes; 0 disables idle shutdown. */
   idleShutdownMinutes: number;
   /** Per-request translation timeout in ms (minimum 1000). */
@@ -41,6 +45,8 @@ export interface ScholarBridgeSettings {
   sourceLanguage: string;
   targetLanguage: string;
   translationStyle: "academic" | "plain" | "literal";
+  /** Custom translator instructions; empty uses the default prompt. */
+  customPrompt: string;
   writeMode: TranslationWriteMode;
   /** Bring the local translator up after Obsidian opens (opt-in convenience). */
   autoStartTranslator: boolean;
@@ -64,6 +70,9 @@ export const DEFAULT_SETTINGS: ScholarBridgeSettings = {
     gpuLayers: 0,
     contextSize: 4096,
     temperature: 0.2,
+    topP: 0.95,
+    topK: 40,
+    maxTokens: 0,
     idleShutdownMinutes: 10,
     requestTimeoutMs: 120_000,
     confirmSpawn: true,
@@ -71,6 +80,7 @@ export const DEFAULT_SETTINGS: ScholarBridgeSettings = {
   sourceLanguage: "zh",
   targetLanguage: "en",
   translationStyle: "academic",
+  customPrompt: "",
   writeMode: "insert-below",
   autoStartTranslator: false,
   glossary: {},
@@ -82,6 +92,38 @@ export const DEFAULT_SETTINGS: ScholarBridgeSettings = {
   },
 };
 
+export const LLAMA_NUMBER_RULES = {
+  port: { min: 1, max: 65535, integer: true },
+  gpuLayers: { min: 0, max: 1000, integer: true },
+  contextSize: { min: 256, max: 1_000_000, integer: true },
+  temperature: { min: 0, max: 2, integer: false },
+  topP: { min: 0, max: 1, integer: false },
+  topK: { min: 0, max: 1_000_000, integer: true },
+  maxTokens: { min: 0, max: 1_000_000, integer: true },
+  idleShutdownMinutes: { min: 0, max: 1440, integer: true },
+  requestTimeoutMs: { min: 1000, max: 3_600_000, integer: true },
+} as const;
+export type LlamaNumberKey = keyof typeof LLAMA_NUMBER_RULES;
+
+export function parseLlamaNumber(key: LlamaNumberKey, text: string): number | null {
+  const value = Number(text);
+  const rule = LLAMA_NUMBER_RULES[key];
+  return text.trim() && Number.isFinite(value) && (!rule.integer || Number.isSafeInteger(value)) &&
+    value >= rule.min && value <= rule.max ? value : null;
+}
+
+export function validateLlamaSettings(llama: LlamaSettings): void {
+  for (const key of Object.keys(LLAMA_NUMBER_RULES) as LlamaNumberKey[]) {
+    if (typeof llama[key] !== "number" || parseLlamaNumber(key, String(llama[key])) === null) {
+      const rule = LLAMA_NUMBER_RULES[key];
+      throw new Error(`${key} must be ${rule.integer ? "an integer" : "a number"} between ${rule.min} and ${rule.max}`);
+    }
+  }
+  if (typeof llama.host !== "string" || !llama.host.trim() || /[\s/\\?#@]/.test(llama.host)) {
+    throw new Error("host must be a hostname or IP address");
+  }
+}
+
 /**
  * Clamp numeric llama settings coming from disk. A hand-edited or corrupted
  * data.json must not be able to push an out-of-range port into the spawn
@@ -90,24 +132,21 @@ export const DEFAULT_SETTINGS: ScholarBridgeSettings = {
  */
 export function sanitizeLlamaSettings(llama: LlamaSettings): LlamaSettings {
   const d = DEFAULT_SETTINGS.llama;
-  const int = (value: unknown, fallback: number, min: number, max: number): number => {
-    const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
-    return Math.min(max, Math.max(min, n));
-  };
-  const temperature =
-    typeof llama.temperature === "number" && Number.isFinite(llama.temperature)
-      ? Math.min(2, Math.max(0, llama.temperature))
-      : d.temperature;
-  return {
-    ...llama,
+  const result = {
+    ...d, ...llama,
+    executablePath: typeof llama.executablePath === "string" ? llama.executablePath.trim() : "",
+    modelPath: typeof llama.modelPath === "string" ? llama.modelPath.trim() : "",
+    confirmSpawn: typeof llama.confirmSpawn === "boolean" ? llama.confirmSpawn : d.confirmSpawn,
     host: typeof llama.host === "string" && llama.host.trim() ? llama.host.trim() : d.host,
-    port: int(llama.port, d.port, 1, 65535),
-    gpuLayers: int(llama.gpuLayers, d.gpuLayers, 0, 1000),
-    contextSize: int(llama.contextSize, d.contextSize, 256, 1_000_000),
-    temperature,
-    idleShutdownMinutes: int(llama.idleShutdownMinutes, d.idleShutdownMinutes, 0, 1440),
-    requestTimeoutMs: int(llama.requestTimeoutMs, d.requestTimeoutMs, 1_000, 3_600_000),
   };
+  for (const key of Object.keys(LLAMA_NUMBER_RULES) as LlamaNumberKey[]) {
+    const rule = LLAMA_NUMBER_RULES[key];
+    let value = typeof llama[key] === "number" && Number.isFinite(llama[key]) ? llama[key] : d[key];
+    if (rule.integer) value = Math.round(value);
+    result[key] = Math.min(rule.max, Math.max(rule.min, value));
+  }
+  if (/[\s/\\?#@]/.test(result.host)) result.host = d.host;
+  return result;
 }
 
 /**

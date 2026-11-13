@@ -62,6 +62,11 @@ function parseLatexDocument(input: string, ids: IdAllocator): ScholarDocument {
         : input.slice(beginDoc + "\\begin{document}".length);
   }
   const metadata = parsePreamble(preamble);
+  if (beginDoc !== -1) {
+    metadata.latexPreamble = preamble;
+    const endDoc = input.indexOf("\\end{document}", beginDoc);
+    if (endDoc !== -1) metadata.latexEpilogue = input.slice(endDoc + "\\end{document}".length);
+  }
   const children = parseLatexBlocks(body, ids);
   return makeDocument(children, Object.keys(metadata).length ? metadata : undefined);
 }
@@ -347,59 +352,67 @@ function parseEnvironment(
   if (MATH_ENVIRONMENTS.has(envName as MathEnvironment)) {
     return { nodes: [makeMathNode(inner, envName as MathEnvironment, ids)], end };
   }
-  switch (envName) {
-    case "table":
-    case "table*":
-      return { nodes: [parseTableFloat(inner, placement, ids)], end };
-    case "tabular":
-    case "tabular*":
-      return { nodes: [parseTabularFloat(inner, placement, ids, envName === "tabular*")], end };
-    case "figure":
-    case "figure*":
-      return { nodes: [parseFigure(inner, placement, ids)], end };
-    case "algorithm":
-      return { nodes: [parseAlgorithm(inner, placement, ids)], end };
-    case "itemize":
-    case "enumerate": {
-      const list = parseList(inner, envName === "enumerate", ids);
-      return { nodes: [list], end };
+  try {
+    switch (envName) {
+      case "table":
+      case "table*":
+        return { nodes: [parseTableFloat(inner, placement, ids, envName)], end };
+      case "tabular":
+      case "tabular*":
+        return { nodes: [parseTabularFloat(inner, placement, ids, envName === "tabular*")], end };
+      case "figure":
+      case "figure*":
+        return { nodes: [parseFigure(inner, placement, ids, envName)], end };
+      case "algorithm":
+        return { nodes: [parseAlgorithm(inner, placement, ids)], end };
+      case "itemize":
+      case "enumerate": {
+        const list = parseList(inner, envName === "enumerate", ids);
+        return { nodes: [list], end };
+      }
+      case "quote": {
+        const children = parseLatexBlocks(inner, ids);
+        return { nodes: [{ id: ids.next("quote"), type: "quote", children }], end };
+      }
+      case "abstract": {
+        return { nodes: parseLatexBlocks(inner, ids), end };
+      }
+      case "verbatim":
+        return {
+          nodes: [{ id: ids.next("code"), type: "code", code: inner.replace(/^\n/, "") }],
+          end,
+        };
+      case "lstlisting":
+        return {
+          nodes: [
+            {
+              id: ids.next("code"),
+              type: "code",
+              language: placement?.match(/language=([\w+-]+)/)?.[1] ?? placement,
+              code: inner.replace(/^\n/, ""),
+            },
+          ],
+          end,
+        };
+      default:
+        return {
+          nodes: [
+            {
+              id: ids.next("raw-latex"),
+              type: "raw-latex",
+              raw: body.slice(start, end),
+              reason: `unsupported environment: ${envName}`,
+            },
+          ],
+          end,
+        };
     }
-    case "quote": {
-      const children = parseLatexBlocks(inner, ids);
-      return { nodes: [{ id: ids.next("quote"), type: "quote", children }], end };
-    }
-    case "abstract": {
-      return { nodes: parseLatexBlocks(inner, ids), end };
-    }
-    case "verbatim":
-      return {
-        nodes: [{ id: ids.next("code"), type: "code", code: inner.replace(/^\n/, "") }],
-        end,
-      };
-    case "lstlisting":
-      return {
-        nodes: [
-          {
-            id: ids.next("code"),
-            type: "code",
-            language: placement?.match(/language=([\w+-]+)/)?.[1] ?? placement,
-            code: inner.replace(/^\n/, ""),
-          },
-        ],
-        end,
-      };
-    default:
-      return {
-        nodes: [
-          {
-            id: ids.next("raw-latex"),
-            type: "raw-latex",
-            raw: body.slice(start, end),
-            reason: `unsupported environment: ${envName}`,
-          },
-        ],
-        end,
-      };
+  } catch (error) {
+    if (!(error instanceof UnsupportedTableSyntaxError)) throw error;
+    return {
+      nodes: [{ id: ids.next("raw-latex"), type: "raw-latex", raw: body.slice(start, end), reason: error.message }],
+      end,
+    };
   }
 }
 
@@ -438,6 +451,7 @@ function parseTableFloat(
   inner: string,
   placement: string | undefined,
   ids: IdAllocator,
+  environment: "table" | "table*" = "table",
 ): TableNode | ScholarBlockNode {
   const caption = readCommandArg(inner, "caption");
   const label = readCommandArg(inner, "label");
@@ -447,11 +461,12 @@ function parseTableFloat(
     return {
       id: ids.next("raw-latex"),
       type: "raw-latex",
-      raw: `\\begin{table}${placement ? `[${placement}]` : ""}${inner}\\end{table}`,
+      raw: `\\begin{${environment}}${placement ? `[${placement}]` : ""}${inner}\\end{${environment}}`,
       reason: "table without tabular environment",
     };
   }
-  const node = parseTabularFloat(inner.slice(tabularMatch.index), placement, ids, false);
+  const node = parseTabularFloat(inner.slice(tabularMatch.index), placement, ids, tabularMatch[0].includes("*"));
+  node.environment = environment;
   if (caption) node.caption = caption;
   if (label) node.label = label;
   return node;
@@ -465,13 +480,17 @@ function parseTabularFloat(
 ): TableNode {
   const beginMatch = /\\begin\{tabular\*?\}/.exec(text);
   let cursor = beginMatch ? beginMatch.index + beginMatch[0].length : 0;
+  let tabularWidth: string | undefined;
   if (starred) {
     // \begin{tabular*}{width}{column spec}
     const widthGroup = readBraceGroup(text, skipSpaces(text, cursor));
-    if (widthGroup) cursor = widthGroup.end;
+    if (!widthGroup) throw new UnsupportedTableSyntaxError("missing tabular* width");
+    tabularWidth = widthGroup.body;
+    cursor = widthGroup.end;
   }
   const specGroup = readBraceGroup(text, skipSpaces(text, cursor));
   const columnSpec = specGroup?.body ?? "";
+  if (!specGroup) throw new UnsupportedTableSyntaxError("missing table column specification");
   if (specGroup) cursor = specGroup.end;
   const endIdx = findMatchingEnd(text, cursor, starred ? "tabular*" : "tabular");
   const inner = endIdx === -1 ? text.slice(cursor) : text.slice(cursor, endIdx);
@@ -486,6 +505,7 @@ function parseTabularFloat(
     id: ids.next("table"),
     type: "table",
     rows,
+    ...(starred ? { tabularEnvironment: "tabular*" as const, tabularWidth } : {}),
     ...(columnSpec ? { columnSpec } : {}),
     ...(alignments.length ? { columnAlignments: alignments } : {}),
     ...(hasBooktabs ? { booktabs: true } : {}),
@@ -493,8 +513,15 @@ function parseTabularFloat(
   };
 }
 
-/** Column letters → alignment list; ignores | and @{…} decorations. */
-export function parseColumnSpec(spec: string): ("left" | "center" | "right")[] {
+const MAX_TABLE_COLUMNS = 256;
+const MAX_COLUMN_DEPTH = 16;
+class UnsupportedTableSyntaxError extends Error {}
+
+/** Column letters and bounded repetition; decorations keep their raw spec. */
+export function parseColumnSpec(spec: string, depth = 0): ("left" | "center" | "right")[] {
+  if (depth > MAX_COLUMN_DEPTH || spec.length > 100_000) {
+    throw new UnsupportedTableSyntaxError("table column specification exceeds parsing budget");
+  }
   const out: ("left" | "center" | "right")[] = [];
   let i = 0;
   while (i < spec.length) {
@@ -515,13 +542,20 @@ export function parseColumnSpec(spec: string): ("left" | "center" | "right")[] {
       if (nG) {
         const specG = readBraceGroup(spec, skipSpaces(spec, nG.end));
         if (specG) {
-          const n = Number.parseInt(nG.body, 10) || 1;
-          const expanded = parseColumnSpec(specG.body);
+          const n = Number(nG.body.trim());
+          if (!/^\d+$/.test(nG.body.trim()) || !Number.isSafeInteger(n) || n > MAX_TABLE_COLUMNS) {
+            throw new UnsupportedTableSyntaxError("table repetition exceeds column budget");
+          }
+          const expanded = parseColumnSpec(specG.body, depth + 1);
+          if (out.length + n * expanded.length > MAX_TABLE_COLUMNS) {
+            throw new UnsupportedTableSyntaxError("table exceeds column budget");
+          }
           for (let k = 0; k < n; k++) out.push(...expanded);
           i = specG.end - 1;
         }
       }
     }
+    if (out.length > MAX_TABLE_COLUMNS) throw new UnsupportedTableSyntaxError("table exceeds column budget");
     i++;
   }
   return out;
@@ -553,63 +587,7 @@ function stripLatexComment(line: string): string {
  * environment (e.g. a pmatrix in a cell) does not end the row.
  */
 function splitTabularRows(inner: string): string[] {
-  const rows: string[] = [];
-  let depth = 0;
-  let envDepth = 0;
-  let current = "";
-  for (let i = 0; i < inner.length; i++) {
-    const ch = inner[i];
-    if (ch === "\\") {
-      // Consume the whole \begin{env}/\end{env} token INCLUDING its braces:
-      // the old code skipped the "{" (i += 6/4) while the "}" was still
-      // counted below, driving `depth` negative after every environment
-      // (found by the R2 P2-1 fix's own test suite).
-      if (inner.startsWith("\\begin{", i)) {
-        const close = inner.indexOf("}", i);
-        if (close !== -1) {
-          envDepth++;
-          current += inner.slice(i, close + 1);
-          i = close;
-          continue;
-        }
-        envDepth++;
-        current += "\\begin{";
-        i += 6;
-        continue;
-      }
-      if (inner.startsWith("\\end{", i)) {
-        const close = inner.indexOf("}", i);
-        if (close !== -1) {
-          envDepth = Math.max(0, envDepth - 1);
-          current += inner.slice(i, close + 1);
-          i = close;
-          continue;
-        }
-        envDepth = Math.max(0, envDepth - 1);
-        current += "\\end{";
-        i += 4;
-        continue;
-      }
-      // Row separator only OUTSIDE brace groups and environments: a \\
-      // inside a cell's braces (\makecell{X\\Y}, \footnote{a\\b}) or inside
-      // a nested environment (\begin{pmatrix} p \\ q \end{pmatrix}) belongs
-      // to the inner construct (CODE_REVIEW_R2 P2-1).
-      if (envDepth === 0 && depth === 0 && inner[i + 1] === "\\") {
-        rows.push(current);
-        current = "";
-        i++;
-        continue;
-      }
-      current += ch + (inner[i + 1] ?? "");
-      i++;
-      continue;
-    }
-    if (ch === "{") depth++;
-    if (ch === "}") depth--;
-    current += ch;
-  }
-  rows.push(current);
-  return rows
+  return splitTableSource(inner, "\\\\")
     .map((r) =>
       r
         .replace(/\\(toprule|midrule|bottomrule)/g, "")
@@ -623,37 +601,61 @@ function splitTabularRows(inner: string): string[] {
 
 function parseRawRow(raw: string, ids: IdAllocator): TableCell[] {
   if (!raw.trim()) return [];
-  const cells: TableCell[] = [];
-  let depth = 0;
-  let current = "";
+  return splitTableSource(raw, "&").map((part) => parseCell(part.trim(), ids));
+}
+
+/** Row and cell separators share the same nesting and escape rules. */
+function splitTableSource(raw: string, separator: "&" | "\\\\"): string[] {
   const parts: string[] = [];
+  let depth = 0;
+  const environments: string[] = [];
+  let math: string | null = null;
+  let start = 0;
   for (let i = 0; i < raw.length; i++) {
     const ch = raw[i];
-    if (ch === "\\" && raw[i + 1] === "&") {
-      current += "&";
-      i++;
+    if (ch === "%") {
+      const end = raw.indexOf("\n", i);
+      i = end === -1 ? raw.length : end;
       continue;
     }
     if (ch === "\\") {
-      current += ch + (raw[i + 1] ?? "");
+      const env = /^\\(begin|end)\{([^}]+)\}/.exec(raw.slice(i));
+      if (env) {
+        if (env[1] === "begin") environments.push(env[2]);
+        else if (environments.pop() !== env[2]) throw new UnsupportedTableSyntaxError("unbalanced table environment");
+        i += env[0].length - 1;
+        continue;
+      }
+      const pair = raw.slice(i, i + 2);
+      if (pair === "\\(" || pair === "\\[") math = pair === "\\(" ? "\\)" : "\\]";
+      else if (pair === math) math = null;
+      else if (pair === separator && depth === 0 && environments.length === 0 && !math) {
+        parts.push(raw.slice(start, i));
+        start = i + 2;
+        if (raw[start] === "[") throw new UnsupportedTableSyntaxError("unsupported table row spacing");
+      }
       i++;
+      continue;
+    }
+    if (ch === "$") {
+      const marker = raw[i + 1] === "$" ? "$$" : "$";
+      math = math === marker ? null : math ?? marker;
+      i += marker.length - 1;
       continue;
     }
     if (ch === "{") depth++;
     if (ch === "}") depth--;
-    if (ch === "&" && depth === 0) {
-      parts.push(current);
-      current = "";
-      continue;
+    if (depth < 0 || depth > 64 || environments.length > 64) {
+      throw new UnsupportedTableSyntaxError("table nesting exceeds parsing budget");
     }
-    current += ch;
+    if (ch === separator && depth === 0 && environments.length === 0 && !math) {
+      parts.push(raw.slice(start, i));
+      start = i + 1;
+    }
   }
-  parts.push(current);
-
-  for (const part of parts) {
-    cells.push(parseCell(part.trim(), ids));
-  }
-  return cells;
+  if (depth || environments.length || math) throw new UnsupportedTableSyntaxError("unclosed table content");
+  parts.push(raw.slice(start));
+  return parts;
 }
 
 function parseCell(raw: string, ids: IdAllocator): TableCell {
@@ -663,11 +665,13 @@ function parseCell(raw: string, ids: IdAllocator): TableCell {
     if (nG) {
       const widthG = readBraceGroup(after, skipSpaces(after, nG.end));
       if (widthG) {
+        if (widthG.body.trim() !== "*") throw new UnsupportedTableSyntaxError("unsupported multirow width");
         const contentG = readBraceGroup(after, skipSpaces(after, widthG.end));
         if (contentG) {
+          if (after.slice(contentG.end).trim()) throw new UnsupportedTableSyntaxError("content after multirow");
           return {
             content: parseLatexInline(contentG.body, ids),
-            rowSpan: Number.parseInt(nG.body, 10) || 1,
+            rowSpan: parseCellSpan(nG.body),
           };
         }
       }
@@ -681,12 +685,14 @@ function parseCell(raw: string, ids: IdAllocator): TableCell {
       if (specG) {
         const contentG = readBraceGroup(after, skipSpaces(after, specG.end));
         if (contentG) {
+          if (after.slice(contentG.end).trim()) throw new UnsupportedTableSyntaxError("content after multicolumn");
+          if (!/^[lcr]$/.test(specG.body.trim())) throw new UnsupportedTableSyntaxError("unsupported multicolumn specification");
           const alignChar = specG.body.trim()[0];
           const alignment =
             alignChar === "c" ? "center" : alignChar === "r" ? "right" : alignChar === "|" ? undefined : "left";
           return {
             content: parseLatexInline(contentG.body, ids),
-            colSpan: Number.parseInt(nG.body, 10) || 1,
+            colSpan: parseCellSpan(nG.body),
             ...(alignment ? { alignment } : {}),
           };
         }
@@ -694,6 +700,14 @@ function parseCell(raw: string, ids: IdAllocator): TableCell {
     }
   }
   return { content: parseLatexInline(raw, ids) };
+}
+
+function parseCellSpan(raw: string): number {
+  const span = Number(raw);
+  if (!Number.isSafeInteger(span) || span < 1 || span > 10_000) {
+    throw new UnsupportedTableSyntaxError("unsupported cell span");
+  }
+  return span;
 }
 
 /**
@@ -739,7 +753,7 @@ function resolveSpans(rows: TableCell[][]): TableCell[][] {
 // Figures
 // ---------------------------------------------------------------------------
 
-function parseFigure(inner: string, placement: string | undefined, ids: IdAllocator): FigureNode | ScholarBlockNode {
+function parseFigure(inner: string, placement: string | undefined, ids: IdAllocator, environment: "figure" | "figure*" = "figure"): FigureNode | ScholarBlockNode {
   const graphicsMatches = [...inner.matchAll(/\\includegraphics\s*(\[[^\]]*\])?\s*\{([^}]*)\}/g)];
   const captionGroup = readCommandArgWithGroup(inner, "caption");
   const label = readCommandArg(inner, "label");
@@ -747,7 +761,7 @@ function parseFigure(inner: string, placement: string | undefined, ids: IdAlloca
     return {
       id: ids.next("raw-latex"),
       type: "raw-latex",
-      raw: `\\begin{figure}${placement ? `[${placement}]` : ""}${inner}\\end{figure}`,
+      raw: `\\begin{${environment}}${placement ? `[${placement}]` : ""}${inner}\\end{${environment}}`,
       reason:
         graphicsMatches.length === 0
           ? "figure without includegraphics"
@@ -761,6 +775,8 @@ function parseFigure(inner: string, placement: string | undefined, ids: IdAlloca
   return {
     id: ids.next("figure"),
     type: "figure",
+    ...(environment === "figure*" ? { environment } : {}),
+    ...(options ? { graphicsOptions: options.slice(1, -1) } : {}),
     path,
     ...(captionGroup ? { caption: latexInlineToText(parseLatexInline(captionGroup, ids)) } : {}),
     ...(label ? { label } : {}),

@@ -12,6 +12,7 @@ import {
   type PreviewItem,
 } from "../views/translation-preview";
 import type { ReinsertionInput, SourceRange, WriteMode } from "../translation/reinsertion";
+import { validateLlamaSettings, type ScholarBridgeSettings } from "../settings/settings";
 
 /**
  * Translate commands (PRODUCT_REQUIREMENTS.md FR-5).
@@ -155,9 +156,17 @@ async function nodeStat(path: string): Promise<{ isFile(): boolean; size: number
   return fsStat(path);
 }
 
-/** The temperature setting participates in every request AND the cache key. */
-function configuredTemperature(plugin: ScholarBridgePlugin): number {
-  return plugin.settings.llama.temperature;
+/** Share generation settings across ordinary translations, retries and refreshes. */
+function generationOptions(settings: ScholarBridgeSettings) {
+  validateLlamaSettings(settings.llama);
+  return {
+    temperature: settings.llama.temperature,
+    topP: settings.llama.topP,
+    topK: settings.llama.topK,
+    maxTokens: settings.llama.maxTokens,
+    customPrompt: settings.customPrompt,
+    contextSize: settings.llama.contextSize,
+  };
 }
 
 /**
@@ -217,8 +226,8 @@ async function translateTarget(
         targetLanguage: settings.targetLanguage,
         style: settings.translationStyle,
         glossary: settings.glossary,
-        temperature: settings.llama.temperature,
-        contextSize: settings.llama.contextSize,
+        signal: plugin.lifetime.signal,
+        ...generationOptions(settings),
         ...(await cacheOptions(plugin)),
       },
     );
@@ -257,6 +266,7 @@ async function translateTarget(
     }
     await showPreview(plugin, items, settings.writeMode, filePath);
   } catch (err) {
+    if (plugin.lifetime.signal.aborted) return;
     new Notice(t("ScholarBridge: translation failed — {{msg}}", { msg: err instanceof Error ? err.message : String(err) }));
   }
 }
@@ -276,11 +286,13 @@ export async function showPreview(
   writeMode: WriteMode,
   filePath: string,
 ): Promise<void> {
+  if (plugin.lifetime.signal.aborted) return;
   // Reuse an existing preview leaf: a fresh tab per Translate run would pile
   // up one stale view per invocation.
   const existing = plugin.app.workspace.getLeavesOfType(TRANSLATION_PREVIEW_VIEW_TYPE)[0];
   const leaf = existing ?? plugin.app.workspace.getLeaf("tab");
   await leaf.setViewState({ type: TRANSLATION_PREVIEW_VIEW_TYPE, active: true });
+  if (plugin.lifetime.signal.aborted) return;
   const view = leaf.view as TranslationPreviewView;
   if (!view || view.getViewType() !== TRANSLATION_PREVIEW_VIEW_TYPE) {
     new Notice(t("ScholarBridge: could not open preview."));
@@ -318,8 +330,8 @@ async function retryItem(
         targetLanguage: item.input.meta.targetLanguage,
         style: plugin.settings.translationStyle,
         glossary: plugin.settings.glossary,
-        temperature: configuredTemperature(plugin),
-        contextSize: plugin.settings.llama.contextSize,
+        signal: plugin.lifetime.signal,
+        ...generationOptions(plugin.settings),
       },
     );
     // The job may have been discarded, applied or replaced while the request
@@ -345,6 +357,7 @@ async function retryItem(
       });
     }
   } catch (err) {
+    if (plugin.lifetime.signal.aborted) return;
     new Notice(t("ScholarBridge: retry failed — {{msg}}", { msg: err instanceof Error ? err.message : String(err) }));
   } finally {
     view.setRetrying(index, false);
@@ -429,8 +442,8 @@ async function translateChangedBlocks(
         targetLanguage: group.targetLanguage,
         style: plugin.settings.translationStyle,
         glossary: plugin.settings.glossary,
-        temperature: configuredTemperature(plugin),
-        contextSize: plugin.settings.llama.contextSize,
+        signal: plugin.lifetime.signal,
+        ...generationOptions(plugin.settings),
         ...(await cacheOptions(plugin)),
       });
       model = model || groupModel;
@@ -477,10 +490,17 @@ async function translateChangedBlocks(
     }
     await showPreview(plugin, items, "replace", filePath);
   } catch (err) {
+    if (plugin.lifetime.signal.aborted) return;
     new Notice(t("ScholarBridge: retranslation failed — {{msg}}", { msg: err instanceof Error ? err.message : String(err) }));
   }
 }
 
 async function openPreview(plugin: ScholarBridgePlugin): Promise<void> {
+  if (plugin.lifetime.signal.aborted) return;
+  const existing = plugin.app.workspace.getLeavesOfType(TRANSLATION_PREVIEW_VIEW_TYPE)[0];
+  if (existing) {
+    await plugin.app.workspace.revealLeaf(existing);
+    return;
+  }
   await showPreview(plugin, [], "insert-below", plugin.app.workspace.getActiveFile()?.path ?? "");
 }

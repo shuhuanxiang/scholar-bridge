@@ -51,8 +51,13 @@ export function readBraceGroup(input: string, start: number): { body: string; en
 export function readBracketGroup(input: string, start: number): { body: string; end: number } | null {
   if (input[start] !== "[") return null;
   let depth = 0;
+  let braces = 0;
   for (let i = start; i < input.length; i++) {
     const ch = input[i];
+    if (ch === "\\") { i++; continue; }
+    if (ch === "{") { braces++; continue; }
+    if (ch === "}" && braces > 0) { braces--; continue; }
+    if (braces > 0) continue;
     if (ch === "]") {
       depth--;
       if (depth === 0) return { body: input.slice(start + 1, i), end: i + 1 };
@@ -188,14 +193,15 @@ export function parseLatexInline(
           const labelGroup = readBraceGroup(input, rest);
           if (labelGroup !== null) {
             push(
-              inline.link("url", group.body, labelGroup.body),
+              inline.link("url", decodeLatexUrl(group.body), labelGroup.body, undefined, parseLatexInline(labelGroup.body, ids)),
             );
             i = labelGroup.end;
             continue;
           }
         }
         if (name === "url") {
-          push(inline.link("url", group.body, group.body));
+          const target = decodeLatexUrl(group.body);
+          push(inline.link("url", target, target, undefined, [inline.text(target)]));
           i = group.end;
           continue;
         }
@@ -259,6 +265,10 @@ export function parseLatexInline(
   }
   flush();
   return mergeText(out);
+}
+
+function decodeLatexUrl(target: string): string {
+  return target.replace(/\\([%#&_{}])/g, "$1");
 }
 
 function readUnknownArguments(input: string, from: number): number {

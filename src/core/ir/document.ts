@@ -70,7 +70,10 @@ export function* walkNodes(doc: ScholarDocument): Generator<ScholarBlockNode | S
     switch (node.type) {
       case "heading":
       case "paragraph":
-        for (const child of node.children) yield* walkNode(child);
+      case "strong":
+      case "emph":
+      case "link":
+        for (const child of node.children ?? []) yield* walkNode(child);
         break;
       case "list":
         for (const item of node.items) {
@@ -112,7 +115,7 @@ export const inline = {
   emph(children: ScholarInlineNode[]): ScholarInlineNode {
     return { id: "", type: "emph", children };
   },
-  link(kind: "url" | "wikilink", target: string, alias?: string, title?: string): ScholarInlineNode {
+  link(kind: "url" | "wikilink", target: string, alias?: string, title?: string, children?: ScholarInlineNode[]): ScholarInlineNode {
     return {
       id: "",
       type: "link",
@@ -120,6 +123,7 @@ export const inline = {
       target,
       ...(alias !== undefined ? { alias } : {}),
       ...(title !== undefined ? { title } : {}),
+      ...(children ? { children } : {}),
     };
   },
   citation(raw: string, keys: string[]): ScholarInlineNode {

@@ -227,10 +227,15 @@ export class LlamaServerManager {
     const deadline = Date.now() + timeoutMs;
     return new Promise((resolve, reject) => {
       let waiter: ((err: Error | null) => void) | null = null;
+      let pollTimer: number | null = null;
+      let settled = false;
       // Always detach our own waiter before settling. Otherwise every
       // rejected path leaves its callback behind and the array grows
       // without bound across repeated failed starts.
       const settle = (fn: () => void): void => {
+        if (settled) return;
+        settled = true;
+        if (pollTimer !== null) window.clearTimeout(pollTimer);
         if (waiter) {
           const idx = this.waiters.indexOf(waiter);
           if (idx >= 0) this.waiters.splice(idx, 1);
@@ -239,6 +244,7 @@ export class LlamaServerManager {
         fn();
       };
       const attempt = async (): Promise<void> => {
+        if (settled) return;
         if (this.statusValue === "stopped" || this.statusValue === "error") {
           settle(() => reject(new ProviderError("unavailable", this.lastError ?? "server stopped")));
           return;
@@ -256,16 +262,21 @@ export class LlamaServerManager {
         } catch {
           healthy = false;
         }
+        if (settled) return;
+        if (this.statusValue !== "starting" && this.statusValue !== "ready" ||
+          (ownProcess !== undefined && this.process !== ownProcess)) {
+          settle(() => reject(new ProviderError("aborted", "server startup cancelled")));
+          return;
+        }
         if (healthy) {
-          this.resolveWaiters(null);
-          resolve();
+          settle(resolve);
           return;
         }
         if (Date.now() > deadline) {
           settle(() => reject(new ProviderError("timeout", `llama-server not ready after ${timeoutMs}ms`)));
           return;
         }
-        window.setTimeout(() => void attempt(), 500);
+        pollTimer = window.setTimeout(() => void attempt(), 500);
       };
       waiter = (err: Error | null) => {
         if (err) settle(() => reject(err));
@@ -276,6 +287,8 @@ export class LlamaServerManager {
   }
 
   async stop(): Promise<void> {
+    this.startGeneration++;
+    this.resolveWaiters(new ProviderError("aborted", "server startup cancelled"));
     this.clearIdleTimer();
     // A stop cancels any startup still in flight; otherwise a later start()
     // would await the cancelled attempt instead of spawning a fresh one.

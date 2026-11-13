@@ -15,6 +15,7 @@ import {
 
 let server: http.Server;
 let port = 0;
+let lastCompletionRequest: Record<string, unknown> | undefined;
 let behavior: {
   healthStatus?: number;
   completionsStatus?: number;
@@ -53,8 +54,18 @@ beforeAll(async () => {
       res.statusCode = 404;
       res.end();
     };
-    if (behavior.delayMs) setTimeout(respond, behavior.delayMs);
-    else respond();
+    const dispatch = () => {
+      if (behavior.delayMs) setTimeout(respond, behavior.delayMs);
+      else respond();
+    };
+    if (req.url?.startsWith("/v1/chat/completions")) {
+      let body = "";
+      req.on("data", (chunk) => { body += String(chunk); });
+      req.on("end", () => {
+        lastCompletionRequest = JSON.parse(body) as Record<string, unknown>;
+        dispatch();
+      });
+    } else dispatch();
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   port = (server.address() as AddressInfo).port;
@@ -66,6 +77,7 @@ afterAll(async () => {
 
 afterEach(() => {
   behavior = {};
+  lastCompletionRequest = undefined;
 });
 
 const makeClient = (timeoutMs = 3_000) =>
@@ -96,6 +108,59 @@ describe("LlamaClient (TEST_PLAN §14)", () => {
     });
     expect(result.blocks).toEqual([{ id: "p_1", translation: "hello ⟦MATH_001⟧" }]);
     expect(result.model).toBe("test-model");
+  });
+
+  it("sends custom instructions and sampling settings in the HTTP request", async () => {
+    await makeClient().translate({
+      blocks: [{ id: "p_1", text: "hola ⟦MATH_001⟧" }],
+      sourceLanguage: "es",
+      targetLanguage: "en",
+      style: "literal",
+      temperature: 0.1,
+      topP: 0.8,
+      topK: 12,
+      maxTokens: 512,
+      customPrompt: "Use concise prose.\nKeep the author's voice.",
+      glossary: { hola: "hello" },
+    });
+    expect(lastCompletionRequest).toMatchObject({
+      temperature: 0.1, top_p: 0.8, top_k: 12, max_tokens: 512, stream: false,
+    });
+    const messages = lastCompletionRequest!.messages as { role: string; content: string }[];
+    expect(messages[0].content).toContain("Use concise prose.\nKeep the author's voice.");
+    expect(messages[0].content).not.toContain("You are a careful academic translator.");
+    expect(messages[0].content).toContain("Translate from es to en.");
+    expect(messages[0].content).toContain("Style: literal.");
+    expect(messages[0].content).toContain('"hola":"hello"');
+    expect(messages[0].content).toContain("Preserve every placeholder token");
+    expect(messages[0].content).toContain("Respond with JSON only");
+  });
+
+  it("keeps zero sampling values and omits the server-default output limit", async () => {
+    await makeClient().translate({
+      blocks: [{ id: "p_1", text: "hola ⟦MATH_001⟧" }],
+      sourceLanguage: "es", targetLanguage: "en", style: "academic",
+      topP: 0, topK: 0, maxTokens: 0, customPrompt: " \n ",
+    });
+    expect(lastCompletionRequest).toMatchObject({ top_p: 0, top_k: 0 });
+    expect(lastCompletionRequest).not.toHaveProperty("max_tokens");
+    const messages = lastCompletionRequest!.messages as { content: string }[];
+    expect(messages[0].content).toContain("You are a careful academic translator.");
+  });
+
+  it("rejects token-limited output even when its JSON is complete", async () => {
+    behavior = {
+      completionsBody: JSON.stringify({
+        choices: [{
+          finish_reason: "length",
+          message: { content: '{"blocks":[{"id":"p_1","translation":"Incomplete."}]}' },
+        }],
+      }),
+    };
+    await expect(makeClient().translate({
+      blocks: [{ id: "p_1", text: "Original text." }],
+      sourceLanguage: "en", targetLanguage: "zh", style: "academic", maxTokens: 10,
+    })).rejects.toThrow("token limit");
   });
 
   it("fails with malformed on non-JSON completion body", async () => {

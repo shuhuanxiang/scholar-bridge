@@ -6,6 +6,7 @@ import {
   type TranslationResult,
 } from "../provider";
 import { createNodeFetchImpl, nodeFetchSupports } from "./node-fetch-impl";
+import { buildTranslationMessages } from "../prompt";
 
 /**
  * llama.cpp client, Phase A: connect to an already-running `llama-server`
@@ -22,6 +23,7 @@ export interface LlamaClientOptions {
   /** Per-request timeout in ms. */
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
   /**
    * Invoked at the very top of every chat() so the caller can bump the
    * server's idle timer before generation starts (prevents an idle
@@ -74,6 +76,7 @@ export class LlamaClient implements TranslationProvider {
   private model: string;
   private timeoutMs: number;
   private fetchImpl: FetchLike;
+  private signal?: AbortSignal;
 
   /**
    * Invoked at the very top of every chat() so the caller can bump the
@@ -98,12 +101,14 @@ export class LlamaClient implements TranslationProvider {
     this.model = opts.model;
     this.timeoutMs = opts.timeoutMs ?? 120_000;
     this.fetchImpl = opts.fetchImpl ?? loopbackFirstFetchImpl();
+    this.signal = opts.signal;
     this.onRequestStart = opts.onRequestStart;
     this.onRequestEnd = opts.onRequestEnd;
   }
 
-  static fromBaseUrl(host: string, port: number, model: string, timeoutMs?: number): LlamaClient {
-    return new LlamaClient({ baseUrl: `http://${host}:${port}`, model, timeoutMs });
+  static fromBaseUrl(host: string, port: number, model: string, timeoutMs?: number, signal?: AbortSignal): LlamaClient {
+    const hostname = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+    return new LlamaClient({ baseUrl: `http://${hostname}:${port}`, model, timeoutMs, signal });
   }
   /** GET /health — llama-server returns 200 when the model is loaded. */
   async health(): Promise<boolean> {
@@ -118,10 +123,15 @@ export class LlamaClient implements TranslationProvider {
     }
   }
 
-  async chat(messages: ChatMessage[], temperature: number, signal?: AbortSignal): Promise<{ content: string; model: string }> {
+  async chat(
+    messages: ChatMessage[],
+    temperature: number,
+    signal?: AbortSignal,
+    sampling: Pick<TranslationRequest, "topP" | "topK" | "maxTokens"> = {},
+  ): Promise<{ content: string; model: string }> {
     this.onRequestStart?.();
     try {
-      return await this.chatOnce(messages, temperature, signal);
+      return await this.chatOnce(messages, temperature, signal, sampling);
     } finally {
       // Always release the idle-timer suspension, even on error/abort —
       // otherwise one failed request would keep the server alive forever.
@@ -129,7 +139,12 @@ export class LlamaClient implements TranslationProvider {
     }
   }
 
-  private async chatOnce(messages: ChatMessage[], temperature: number, signal?: AbortSignal): Promise<{ content: string; model: string }> {
+  private async chatOnce(
+    messages: ChatMessage[],
+    temperature: number,
+    signal: AbortSignal | undefined,
+    sampling: Pick<TranslationRequest, "topP" | "topK" | "maxTokens">,
+  ): Promise<{ content: string; model: string }> {
     const res = await this.request(
       `${this.baseUrl}/v1/chat/completions`,
       {
@@ -139,6 +154,9 @@ export class LlamaClient implements TranslationProvider {
           model: this.model,
           messages,
           temperature,
+          top_p: sampling.topP,
+          top_k: sampling.topK,
+          ...(sampling.maxTokens && sampling.maxTokens > 0 ? { max_tokens: sampling.maxTokens } : {}),
           stream: false,
         }),
         signal,
@@ -151,12 +169,15 @@ export class LlamaClient implements TranslationProvider {
     } catch {
       throw new ProviderError("malformed", "chat completion returned non-JSON body");
     }
-    const obj = parsed as { choices?: { message?: { content?: string } }[]; model?: string };
-    const content = obj.choices?.[0]?.message?.content;
+    const obj = parsed as { choices?: { message?: { content?: string }; finish_reason?: string }[]; model?: string } | null;
+    const content = obj?.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
       throw new ProviderError("malformed", "chat completion missing choices[0].message.content");
     }
-    return { content, model: obj.model ?? this.model };
+    if (obj?.choices?.[0]?.finish_reason === "length") {
+      throw new ProviderError("malformed", "generation reached its token limit; increase the output limit or context size, or translate less text");
+    }
+    return { content, model: typeof obj?.model === "string" ? obj.model : this.model };
   }
 
   /**
@@ -164,29 +185,28 @@ export class LlamaClient implements TranslationProvider {
    * a JSON response contract validated by the caller (translation.ts).
    */
   async translate(req: TranslationRequest, signal?: AbortSignal): Promise<TranslationResult> {
-    const system = buildSystemPrompt(req);
-    const user = buildUserPrompt(req);
     const { content, model } = await this.chat(
-      [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
+      buildTranslationMessages(req),
       req.temperature ?? 0.2,
       signal,
+      req,
     );
-    let parsed: { blocks?: { id?: string; translation?: string }[] };
+    let parsed: unknown;
     try {
-      parsed = JSON.parse(extractJson(content)) as { blocks?: { id?: string; translation?: string }[] };
+      parsed = JSON.parse(extractJson(content));
     } catch {
       throw new ProviderError("malformed", "translation response is not valid JSON");
     }
-    if (!Array.isArray(parsed.blocks)) {
+    if (!parsed || typeof parsed !== "object" || !("blocks" in parsed) || !Array.isArray(parsed.blocks)) {
       throw new ProviderError("malformed", "translation response missing blocks array");
     }
-    const blocks = parsed.blocks.map((b) => ({
-      id: String(b.id ?? ""),
-      translation: String(b.translation ?? ""),
-    }));
+    const blocks = parsed.blocks.map((block: unknown) => {
+      if (!block || typeof block !== "object" || !("id" in block) || typeof block.id !== "string" ||
+        !block.id.trim() || !("translation" in block) || typeof block.translation !== "string") {
+        throw new ProviderError("malformed", "translation response blocks require string ids and translations");
+      }
+      return { id: block.id, translation: block.translation };
+    });
     return { blocks, raw: content, model };
   }
 
@@ -200,8 +220,8 @@ export class LlamaClient implements TranslationProvider {
     init: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
     timeoutMs: number,
   ): Promise<{ ok: boolean; status: number; text: string }> {
-    const outer = init.signal;
-    if (outer?.aborted) {
+    const outers = [...new Set([init.signal, this.signal].filter((signal): signal is AbortSignal => Boolean(signal)))];
+    if (outers.some((signal) => signal.aborted)) {
       throw new ProviderError("aborted", "request aborted before it was sent");
     }
     const controller = new AbortController();
@@ -211,7 +231,7 @@ export class LlamaClient implements TranslationProvider {
       controller.abort(new DOMException("timeout", "TimeoutError"));
     }, timeoutMs);
     const onOuterAbort = () => controller.abort(new DOMException("aborted", "AbortError"));
-    outer?.addEventListener("abort", onOuterAbort);
+    for (const signal of outers) signal.addEventListener("abort", onOuterAbort);
     try {
       const res = await this.fetchImpl(url, { ...init, signal: controller.signal });
       if (!res.ok) {
@@ -225,7 +245,7 @@ export class LlamaClient implements TranslationProvider {
     } catch (err) {
       if (err instanceof ProviderError) throw err;
       // Distinguish the abort causes: a caller cancel is not a server fault.
-      if (outer?.aborted) {
+      if (outers.some((signal) => signal.aborted)) {
         throw new ProviderError("aborted", "request aborted");
       }
       if (timedOut) {
@@ -238,7 +258,7 @@ export class LlamaClient implements TranslationProvider {
       throw new ProviderError("unavailable", `cannot reach llama-server at ${this.baseUrl}: ${String(err)}`);
     } finally {
       window.clearTimeout(timer);
-      outer?.removeEventListener("abort", onOuterAbort);
+      for (const signal of outers) signal.removeEventListener("abort", onOuterAbort);
     }
   }
 
@@ -282,28 +302,6 @@ export class LlamaClient implements TranslationProvider {
     }
     return text;
   }
-}
-
-function buildSystemPrompt(req: TranslationRequest): string {
-  return [
-    "You are a careful academic translator.",
-    `Translate from ${req.sourceLanguage} to ${req.targetLanguage}.`,
-    "Style: " + req.style + ".",
-    ...(req.glossary && Object.keys(req.glossary).length > 0
-      ? ["Use these fixed term translations:", JSON.stringify(req.glossary)]
-      : []),
-    "Rules:",
-    "- Preserve every placeholder token (e.g. ⟦MATH_001⟧, ⟦LINK_001⟧) EXACTLY as written.",
-    "- Do not translate mathematics, code, citations, or file names.",
-    "- Respond with JSON only, in this exact shape:",
-    '{"blocks":[{"id":"<block id>","translation":"<translated text>"}]}',
-    "- Return one entry for every requested block id, with no extra ids.",
-  ].join("\n");
-}
-
-function buildUserPrompt(req: TranslationRequest): string {
-  const lines = req.blocks.map((b) => `### BLOCK ${b.id}\n${b.text}`);
-  return `${lines.join("\n\n")}\n\nRespond with the JSON object now.`;
 }
 
 /**

@@ -28,11 +28,18 @@ export function normalizeVaultPath(path: string): string {
 export function planProjectExport(folderPath: string, mdBasenames: string[]): ProjectExportPlan {
   const outDir = normalizeVaultPath(`${folderPath}/latex`);
   const sectionsDir = normalizeVaultPath(`${outDir}/sections`);
+  const sectionFiles = mdBasenames.map((base) => {
+    latexInputName(base);
+    return normalizeVaultPath(`${sectionsDir}/${base}.tex`);
+  });
+  if (new Set(sectionFiles.map((file) => file.toLowerCase())).size !== sectionFiles.length) {
+    throw new Error("project export section paths must be unique");
+  }
   return {
     outDir,
     sectionsDir,
     mainTex: normalizeVaultPath(`${outDir}/main.tex`),
-    sectionFiles: mdBasenames.map((base) => normalizeVaultPath(`${sectionsDir}/${base}.tex`)),
+    sectionFiles,
   };
 }
 
@@ -41,11 +48,18 @@ export function buildMainTex(
   profile: "article" | "ctexart",
   packages: string[],
   sectionNames: string[],
+  original?: { preamble: string; packages: string[] },
+  sourcePaths?: string[],
 ): string {
-  const lines: string[] = [`\\documentclass{${profile}}`];
-  for (const pkg of packages) lines.push(`\\usepackage{${pkg}}`);
+  const lines: string[] = [original ? original.preamble.trimEnd() : `\\documentclass{${profile}}`];
+  for (const pkg of packages) {
+    if (!original?.packages.includes(pkg)) lines.push(`\\usepackage{${pkg}}`);
+  }
   lines.push("\\begin{document}");
-  for (const name of sectionNames) lines.push(`\\input{${latexInputName(name)}}`);
+  sectionNames.forEach((name, index) => {
+    if (sourcePaths?.[index]) lines.push(`% Source: ${sourcePaths[index].replace(/[\r\n]/g, " ")}`);
+    lines.push(`\\input{${latexInputName(name)}}`);
+  });
   lines.push("\\end{document}");
   return lines.join("\n") + "\n";
 }
@@ -60,6 +74,9 @@ export function buildMainTex(
  * conditional.
  */
 export function latexInputName(name: string): string {
+  if (!name || /[\\/:*?|%#&${}^~"<>\r\n]/.test(name) || name === "." || name === "..") {
+    throw new Error(`unsafe LaTeX section name: ${name}`);
+  }
   const rel = `sections/${name}`;
   return /^[\x21-\x7e]+$/.test(rel) ? rel : `"${rel}"`;
 }
@@ -70,11 +87,15 @@ export function latexInputName(name: string): string {
  * characters become dashes.
  */
 export function sectionBasenames(files: { basename: string }[]): string[] {
-  const used = new Map<string, number>();
+  const used = new Set<string>();
   return files.map((file) => {
-    const base = file.basename.replace(/[\\/:*?"<>|]/g, "-") || "section";
-    const seen = used.get(base) ?? 0;
-    used.set(base, seen + 1);
-    return seen === 0 ? base : `${base}-${seen + 1}`;
+    let base = file.basename.normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 120) || "section";
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(base)) base = `section-${base}`;
+    let candidate = base;
+    let suffix = 2;
+    while (used.has(candidate.toLowerCase())) candidate = `${base}-${suffix++}`;
+    used.add(candidate.toLowerCase());
+    return candidate;
   });
 }

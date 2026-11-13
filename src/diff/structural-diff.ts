@@ -42,6 +42,8 @@ export interface InlineChange {
 }
 
 export interface BlockDiff {
+  /** Shared immutable snapshot for safe application of Markdown comparisons. */
+  sourceSnapshot?: string;
   status: "equal" | "changed" | "added" | "removed";
   type: string;
   oldNode?: ScholarBlockNode;
@@ -64,7 +66,11 @@ export function diffDocuments(
   const opts: DiffOptions = { ...DEFAULT_DIFF_OPTIONS, ...options };
   const oldDoc = parseDocument(oldInput, format);
   const newDoc = parseDocument(newInput, format);
-  return diffDocumentsIR(oldDoc, newDoc, opts);
+  const result = diffDocumentsIR(oldDoc, newDoc, opts);
+  if (format === "markdown") {
+    for (const block of result.blocks) block.sourceSnapshot = oldInput;
+  }
+  return result;
 }
 
 export function diffDocumentsIR(oldDoc: ScholarDocument, newDoc: ScholarDocument, opts: DiffOptions): DocumentDiff {
@@ -121,6 +127,7 @@ function diffBlockPair(oldNode: ScholarBlockNode, newNode: ScholarBlockNode, opt
   if (oldNode.type !== newNode.type) {
     return { status: "changed", type: newNode.type, oldNode, newNode };
   }
+  const structureChanged = structureKey(oldNode, opts) !== structureKey(newNode, opts);
   switch (oldNode.type) {
     case "paragraph":
     case "heading": {
@@ -130,7 +137,7 @@ function diffBlockPair(oldNode: ScholarBlockNode, newNode: ScholarBlockNode, opt
       const levelChanged =
         oldNode.type === "heading" && newNode2.type === "heading" && newNode2.level !== oldNode.level;
       return {
-        status: levelChanged || changes.some((c) => c.op !== "equal") ? "changed" : "equal",
+        status: structureChanged || levelChanged || changes.some((c) => c.op !== "equal") ? "changed" : "equal",
         type: oldNode.type,
         oldNode,
         newNode,
@@ -140,7 +147,7 @@ function diffBlockPair(oldNode: ScholarBlockNode, newNode: ScholarBlockNode, opt
     case "math": {
       const oldMath = oldNode;
       const newMath = newNode as typeof oldNode;
-      if (oldMath.latex === newMath.latex && oldMath.environment === newMath.environment) {
+      if (oldMath.latex === newMath.latex && !structureChanged) {
         return { status: "equal", type: "math", oldNode, newNode };
       }
       const oldTokens = formulaDiffTokens(oldMath.latex);
@@ -159,7 +166,7 @@ function diffBlockPair(oldNode: ScholarBlockNode, newNode: ScholarBlockNode, opt
       });
       return {
         status:
-          oldMath.environment !== newMath.environment || changes.some((c) => c.op !== "equal")
+          structureChanged || changes.some((c) => c.op !== "equal")
             ? "changed"
             : "equal",
         type: "math",
@@ -176,7 +183,7 @@ function diffBlockPair(oldNode: ScholarBlockNode, newNode: ScholarBlockNode, opt
       };
       const captionChanged = comparableCaption(oldNode.caption) !== comparableCaption((newNode as typeof oldNode).caption);
       return {
-        status: result.hasChanges || captionChanged ? "changed" : "equal",
+        status: structureChanged || result.hasChanges || captionChanged ? "changed" : "equal",
         type: "table",
         oldNode,
         newNode,
@@ -186,7 +193,7 @@ function diffBlockPair(oldNode: ScholarBlockNode, newNode: ScholarBlockNode, opt
     case "code": {
       const oldCode = oldNode.code;
       const newCode = (newNode as typeof oldNode).code;
-      return oldCode === newCode
+      return oldCode === newCode && !structureChanged
         ? { status: "equal", type: "code", oldNode, newNode }
         : { status: "changed", type: "code", oldNode, newNode, changes: [{ op: "replace", text: newCode, oldText: oldCode }] };
     }
@@ -201,7 +208,7 @@ function diffBlockPair(oldNode: ScholarBlockNode, newNode: ScholarBlockNode, opt
           opts,
         );
         return {
-          status: changes.some((c) => c.op !== "equal") ? "changed" : "equal",
+          status: structureChanged || changes.some((c) => c.op !== "equal") ? "changed" : "equal",
           type: oldNode.type,
           oldNode,
           newNode,
@@ -283,7 +290,40 @@ function signature(node: ScholarBlockNode, opts: DiffOptions): string {
   const content = blockComparableText(node, opts);
   const normalized = opts.ignoreWhitespace ? normalizeWhitespace(content) : content;
   const key = opts.caseSensitive ? normalized : normalized.toLowerCase();
-  return `${kind}:${key}`;
+  return `${kind}:${structureKey(node, opts)}:${key}`;
+}
+
+/** Structural fields are compared independently of prose normalization. */
+function structureKey(node: ScholarBlockNode, opts: DiffOptions): string {
+  const nested = (nodes: ScholarBlockNode[]) => nodes.map((child) => [child.type, structureKey(child, opts)]);
+  switch (node.type) {
+    case "heading": return JSON.stringify([node.level, inlineStructure(node.children)]);
+    case "paragraph": return JSON.stringify(inlineStructure(node.children));
+    case "math": return JSON.stringify([node.display, node.environment, node.label]);
+    case "code": return JSON.stringify(node.language ?? "");
+    case "list": return JSON.stringify([node.ordered, node.start ?? 1, Boolean(node.loose), node.items.map((item) => nested(item.children))]);
+    case "quote":
+    case "list-item": return JSON.stringify(nested(node.children));
+    case "figure": return JSON.stringify([node.environment, node.width, node.latexWidth, node.graphicsOptions, node.placement, node.label]);
+    case "table": return JSON.stringify([
+      node.environment, node.tabularEnvironment, node.tabularWidth, node.placement, node.label,
+      node.columnSpec, node.columnAlignments, Boolean(node.booktabs),
+      node.rows.map((row) => row.map((cell) => [
+        cell.rowSpan ?? 1, cell.colSpan ?? 1, Boolean(cell.rowSpanContinue), cell.alignment, inlineStructure(cell.content),
+      ])),
+    ]);
+    case "algorithm": return JSON.stringify([node.backend, node.label, node.placement, node.body.map((line) => line.indent)]);
+    default: return "";
+  }
+}
+
+function inlineStructure(nodes: ScholarInlineNode[]): unknown[] {
+  return nodes.flatMap((node): unknown[] => {
+    if (node.type === "strong" || node.type === "emph") return inlineStructure(node.children);
+    if (node.type === "inline-math") return [["math", Boolean(node.display)]];
+    if (node.type === "link") return [["link", node.kind, inlineStructure(node.children ?? [])]];
+    return [];
+  });
 }
 
 export type { FormulaToken };

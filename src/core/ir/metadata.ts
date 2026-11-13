@@ -45,6 +45,8 @@ export interface TranslationMeta {
   translatedAt?: string;
   writeMode?: "insert-below" | "replace" | "translated-copy" | "bilingual";
   sourceLineCount?: number;
+  /** Explicit so legacy insert-below blocks retain their unquoted text. */
+  presentation?: "blockquote";
 }
 
 /** Deterministic JSON: object keys sorted recursively, arrays kept in order. */
@@ -99,6 +101,22 @@ export function encodeTranslationStart(meta: TranslationMeta): string {
 
 export function encodeTranslationEnd(): string {
   return `<!-- ${TRANSLATION_END} -->`;
+}
+
+export function encodeTranslationBlock(meta: TranslationMeta, text: string): string {
+  const body = meta.presentation === "blockquote"
+    ? "\n" + text.split(/\r?\n/).map((line) => line ? `> ${line}` : ">").join("\n") + "\n"
+    : text;
+  return `${encodeTranslationStart(meta)}\n${body}\n${encodeTranslationEnd()}`;
+}
+
+/** Remove only the presentation added by encodeTranslationBlock. */
+export function decodeTranslationText(meta: TranslationMeta, text: string): string {
+  if (meta.presentation !== "blockquote") return text;
+  const lines = text.split("\n");
+  if (lines[0] === "") lines.shift();
+  if (lines.at(-1) === "") lines.pop();
+  return lines.map((line) => line.replace(/^> ?/, "")).join("\n");
 }
 
 export function decodeTranslationStart(commentBody: string): TranslationMeta | null {

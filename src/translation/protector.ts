@@ -1,4 +1,5 @@
-import { readCodeSpan } from "../core/parser/markdown/inline";
+import { readCodeSpan, readMarkdownLink } from "../core/parser/markdown/inline";
+import { readBraceGroup, readBracketGroup } from "../core/parser/latex/inline";
 
 /**
  * Translation placeholder protection (TECHNICAL_DESIGN.md §11).
@@ -98,14 +99,44 @@ export function protectBlock(text: string, opts: ProtectOptions = {}): Protectio
 
   const candidates: { kind: ProtectedKind; start: number; end: number }[] = [];
   for (let i = 0; i < text.length; i++) {
-    if (text[i] !== "`") continue;
-    const span = readCodeSpan(text, i);
-    if (!span) {
-      i += /^`+/.exec(text.slice(i))![0].length - 1;
+    if (text.startsWith("<!--", i)) {
+      const close = text.indexOf("-->", i + 4);
+      const end = close === -1 ? text.length : close + 3;
+      candidates.push({ kind: "RAW", start: i, end });
+      i = end - 1;
       continue;
     }
-    candidates.push({ kind: "CODE", start: i, end: span.end });
-    i = span.end - 1;
+    const link = readMarkdownLink(text, text[i] === "!" ? i + 1 : i);
+    if (link) {
+      candidates.push({ kind: "LINK", start: i, end: link.end });
+      i = link.end - 1;
+      continue;
+    }
+    if (text[i] === "\\") {
+      const command = /^\\[A-Za-z]+\*?/.exec(text.slice(i));
+      if (command) {
+        let end = i + command[0].length;
+        for (;;) {
+          let start = end;
+          while (/\s/.test(text[start] ?? "") && start < text.length) start++;
+          if (text[start] !== "[" && text[start] !== "{") break;
+          const group = text[start] === "[" ? readBracketGroup(text, start) : readBraceGroup(text, start);
+          end = group?.end ?? text.length;
+          if (!group) break;
+        }
+        candidates.push({ kind: /cite/i.test(command[0]) ? "CITE" : "RAW", start: i, end });
+        i = end - 1;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (text[i] === "`") {
+      const span = readCodeSpan(text, i);
+      if (!span) { i += /^`+/.exec(text.slice(i))![0].length - 1; continue; }
+      candidates.push({ kind: "CODE", start: i, end: span.end });
+      i = span.end - 1;
+    }
   }
   for (const rule of RULES) {
     rule.re.lastIndex = 0;

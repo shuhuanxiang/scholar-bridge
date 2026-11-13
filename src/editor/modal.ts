@@ -10,6 +10,8 @@ export class ConfirmModal extends Modal {
   private onConfirm: () => void;
   private onCancel?: () => void;
   private confirmed = false;
+  private signal?: AbortSignal;
+  private readonly onAbort = () => this.close();
 
   constructor(
     app: App,
@@ -20,6 +22,7 @@ export class ConfirmModal extends Modal {
       cancelText?: string;
       onConfirm: () => void;
       onCancel?: () => void;
+      signal?: AbortSignal;
     },
   ) {
     super(app);
@@ -29,9 +32,12 @@ export class ConfirmModal extends Modal {
     this.cancelText = opts.cancelText ?? t("Keep original");
     this.onConfirm = opts.onConfirm;
     this.onCancel = opts.onCancel;
+    this.signal = opts.signal;
   }
 
   onOpen(): void {
+    if (this.signal?.aborted) { this.close(); return; }
+    this.signal?.addEventListener("abort", this.onAbort, { once: true });
     this.contentEl.createEl("h3", { text: this.title });
     this.contentEl.createEl("p", { text: this.message });
     const buttons = this.contentEl.createDiv("scholar-bridge-button-row");
@@ -46,6 +52,7 @@ export class ConfirmModal extends Modal {
   }
 
   onClose(): void {
+    this.signal?.removeEventListener("abort", this.onAbort);
     if (!this.confirmed) this.onCancel?.();
     this.contentEl.empty();
   }

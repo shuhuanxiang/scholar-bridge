@@ -1,6 +1,5 @@
 import {
-  encodeTranslationEnd,
-  encodeTranslationStart,
+  encodeTranslationBlock,
   type TranslationMeta,
 } from "../core/ir/metadata";
 import { sourceHash } from "../core/ir/source-hash";
@@ -10,10 +9,10 @@ export { sourceHash };
  * Translation reinsertion (PRODUCT_REQUIREMENTS.md FR-6, PRD §3.8).
  *
  * Write modes:
- *   insert-below    — default: translation block added under the source
+ *   insert-below    — default: blockquoted translation under the source
  *   replace         — source replaced by the translation (hash preserved)
  *   translated-copy — whole-document translated variant (new note)
- *   bilingual       — per-block interleave (same shape as insert-below)
+ *   bilingual       — per-block source/translation interleave
  *
  * Only the preview Apply path ever calls these on a real editor.
  */
@@ -54,6 +53,7 @@ export interface ReinsertionInput {
 
 /** Record both the source identity and the block's export semantics. */
 export function buildTranslationMeta(input: ReinsertionInput, mode: WriteMode = "insert-below"): TranslationMeta {
+  const writeMode = input.writeMode ?? mode;
   return {
     schemaVersion: 1,
     sourceNodeId: input.nodeId,
@@ -64,18 +64,15 @@ export function buildTranslationMeta(input: ReinsertionInput, mode: WriteMode = 
     glossaryVersion: input.meta.glossaryVersion,
     promptVersion: input.meta.promptVersion,
     status: "fresh",
-    writeMode: input.writeMode ?? mode,
+    writeMode,
     sourceLineCount: input.range.raw.split("\n").length,
+    ...(writeMode === "insert-below" ? { presentation: "blockquote" } : {}),
   };
 }
 
 export function buildTranslationBlock(input: ReinsertionInput, mode: WriteMode = "insert-below"): string {
   const meta = buildTranslationMeta(input, mode);
-  return [
-    encodeTranslationStart(meta),
-    input.translation,
-    encodeTranslationEnd(),
-  ].join("\n");
+  return encodeTranslationBlock(meta, input.translation);
 }
 
 export type WriteMode = "insert-below" | "replace" | "translated-copy" | "bilingual";

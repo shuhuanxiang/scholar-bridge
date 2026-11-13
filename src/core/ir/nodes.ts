@@ -75,6 +75,7 @@ export interface LinkNode extends BaseNode {
   alias?: string;
   /** Optional `"title"` after the target in `[alias](target "title")`. */
   title?: string;
+  children?: ScholarInlineNode[];
 }
 
 export interface CitationNode extends BaseNode {
@@ -165,6 +166,9 @@ export interface TableCell {
 
 export interface TableNode extends BaseNode {
   type: "table";
+  environment?: "table" | "table*";
+  tabularEnvironment?: "tabular" | "tabular*";
+  tabularWidth?: string;
   caption?: string;
   label?: string;
   placement?: string;
@@ -180,6 +184,8 @@ export interface TableNode extends BaseNode {
 
 export interface FigureNode extends BaseNode {
   type: "figure";
+  environment?: "figure" | "figure*";
+  graphicsOptions?: string;
   path: string;
   caption?: string;
   label?: string;

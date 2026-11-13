@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { parseMarkdown } from "../../src/core/parser/markdown/markdown-parser";
+import { writeMarkdown } from "../../src/core/writer/markdown/markdown-writer";
+import { encodeTranslationEnd, encodeTranslationStart } from "../../src/core/ir/metadata";
 import {
   applyToLines,
   buildTranslationBlock,
+  buildTranslationMeta,
   createTranslatedCopy,
   freshnessStatus,
   sourceHash,
@@ -34,9 +38,36 @@ describe("Translation insertion (TEST_PLAN §12)", () => {
     expect(text).toContain('"model":"qwen2.5-7b-instruct"');
     expect(text).toContain('"promptVersion":"v1"');
     expect(text).toContain('"sourceHash":"' + sourceHash(input.range.raw) + '"');
-    expect(text).toContain("We propose a new federated learning defense method.");
+    expect(text).toContain("\n> We propose a new federated learning defense method.\n");
     expect(text).toContain("scholarbridge:translation:end");
     expect(text).toContain("Next paragraph.");
+  });
+
+  it("quotes every translation line, including blank lines and existing quotes", () => {
+    const translation = "First line.\nSecond line.\n\n> An existing quote.\n\n$x+y$";
+    const block = buildTranslationBlock({ ...input, translation });
+    expect(block).toContain("\n> First line.\n> Second line.\n>\n> > An existing quote.\n>\n> $x+y$\n");
+    const doc = parseMarkdown(block);
+    expect(doc.children[0]).toMatchObject({ type: "translation-block", text: translation });
+    const written = writeMarkdown(doc);
+    expect(written.trimEnd()).toBe(block);
+    expect(written).not.toContain("> > First line.");
+  });
+
+  it("keeps legacy unquoted translation blocks unchanged", () => {
+    const meta = buildTranslationMeta(input);
+    delete meta.presentation;
+    const text = "> Existing content.\n\nUnquoted content.";
+    const block = `${encodeTranslationStart(meta)}\n${text}\n${encodeTranslationEnd()}`;
+    const doc = parseMarkdown(block);
+    expect(doc.children[0]).toMatchObject({ type: "translation-block", text });
+    expect(writeMarkdown(doc).trimEnd()).toBe(block);
+  });
+
+  it.each(["replace", "bilingual"] as const)("keeps %s translation text unquoted", (mode) => {
+    const block = buildTranslationBlock(input, mode);
+    expect(block).toContain(`\n${input.translation}\n`);
+    expect(block).not.toContain(`\n> ${input.translation}`);
   });
 
   it("replace mode swaps source for the translation block", () => {

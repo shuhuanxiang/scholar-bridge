@@ -21,6 +21,38 @@ export function readCodeSpan(input: string, start: number): { code: string; end:
   return null;
 }
 
+/** Read complete labels and balanced destinations for parsing and protection. */
+export function readMarkdownLink(input: string, start: number): {
+  label: string; target: string; title?: string; end: number;
+} | null {
+  if (input[start] !== "[" || input[start + 1] === "[") return null;
+  let depth = 1;
+  for (let i = start + 1; i < input.length; i++) {
+    if (input[i] === "\\") { i++; continue; }
+    if (input.startsWith("<!--", i)) {
+      const close = input.indexOf("-->", i + 4);
+      if (close !== -1) { i = close + 2; continue; }
+    }
+    if (input[i] === "`") {
+      const span = readCodeSpan(input, i);
+      if (span) { i = span.end - 1; continue; }
+    }
+    if (input[i] === "[") { depth++; continue; }
+    if (input[i] !== "]") continue;
+    depth--;
+    if (depth > 0) continue;
+    if (input[i + 1] !== "(") return null;
+    const close = matchParen(input, i + 1);
+    if (close === -1) return null;
+    return {
+      label: input.slice(start + 1, i),
+      ...splitLinkDestination(input.slice(i + 2, close)),
+      end: close + 1,
+    };
+  }
+  return null;
+}
+
 /**
  * Inline Markdown (incl. Obsidian constructs) → inline IR nodes.
  * Unsupported markers stay as literal text so nothing is lost on round-trip.
@@ -180,19 +212,11 @@ export function parseMarkdownInline(
 
     // Markdown link [text](url "title") — balanced-paren target scan
     if (ch === "[" && input[i + 1] !== "[") {
-      const close = input.indexOf("](", i + 1);
-      if (close !== -1) {
-        const closeParen = matchParen(input, close + 1);
-        if (closeParen !== -1) {
-          const label = input.slice(i + 1, close);
-          if (!label.startsWith("^")) {
-            // footnote refs [^x](…) are not links
-            const { target, title } = splitLinkDestination(input.slice(close + 2, closeParen));
-            push(inline.link("url", target, label, title));
-            i = closeParen + 1;
-            continue;
-          }
-        }
+      const link = readMarkdownLink(input, i);
+      if (link && !link.label.startsWith("^")) {
+        push(inline.link("url", link.target, link.label, link.title, parseMarkdownInline(link.label, ids)));
+        i = link.end;
+        continue;
       }
     }
 
@@ -249,12 +273,22 @@ function findClosingMarker(input: string, from: number, marker: string): number 
 /** Index of the `)` matching the `(` at `open`, honoring `\(` escapes; -1. */
 function matchParen(input: string, open: number): number {
   let depth = 0;
+  let quote: string | null = null;
+  let angle = false;
   for (let i = open; i < input.length; i++) {
     const ch = input[i];
     if (ch === "\\") {
       i++;
       continue;
     }
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if ((ch === '"' || ch === "'") && /\s/.test(input[i - 1] ?? "")) { quote = ch; continue; }
+    if (ch === "<" && depth === 1) { angle = true; continue; }
+    if (ch === ">" && angle) { angle = false; continue; }
+    if (angle) continue;
     if (ch === "(") depth++;
     else if (ch === ")") {
       depth--;

@@ -2,7 +2,8 @@
  * Translation cache (TECHNICAL_DESIGN.md §15, IMPLEMENTATION_PLAN.md M9).
  *
  * Key: hash(normalized source + source language + target language + style +
- * temperature + model identity + prompt version + glossary version).
+ * sampling options + custom prompt + model identity + prompt version +
+ * glossary version).
  * Value: the final, validated, placeholder-restored translation.
  *
  * Only validated output ever reaches `put()` — the cache is written from the
@@ -45,6 +46,10 @@ export interface CacheContext {
   targetLanguage: string;
   style: string;
   temperature?: number;
+  topP?: number;
+  topK?: number;
+  maxTokens?: number;
+  customPrompt?: string;
   /** Model identity: model file path, or endpoint for connect-only mode. */
   modelIdentity: string;
   promptVersion: string;
@@ -61,6 +66,10 @@ export function cacheKey(ctx: CacheContext): string {
     ctx.targetLanguage,
     ctx.style,
     temperature,
+    ctx.topP ?? "default",
+    ctx.topK ?? "default",
+    ctx.maxTokens || "default",
+    ctx.customPrompt?.trim() ?? "",
     ctx.modelIdentity,
     ctx.promptVersion,
     ctx.glossaryVersion,

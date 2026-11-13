@@ -21,6 +21,10 @@ export interface TranslationRequest {
   targetLanguage: string;
   style: string;
   temperature?: number;
+  topP?: number;
+  topK?: number;
+  maxTokens?: number;
+  customPrompt?: string;
   glossary?: Record<string, string>;
 }
 
