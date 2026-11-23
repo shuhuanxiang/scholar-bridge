@@ -85,6 +85,8 @@ const zh: Record<string, string> = {
     "ScholarBridge：这篇笔记没有已存储的翻译。",
   "ScholarBridge: all translations are up to date.": "ScholarBridge：所有翻译均为最新。",
   "ScholarBridge: retranslation failed — {{msg}}": "ScholarBridge：重新翻译失败——{{msg}}",
+  "ScholarBridge: {{n}} paragraph(s) could not be translated.":
+    "ScholarBridge：有 {{n}} 个段落未能翻译。",
   "ScholarBridge: {{n}} paragraph(s) could not be translated — retry them from the preview.":
     "ScholarBridge：有 {{n}} 个段落未能翻译——可在预览中单独重试。",
 

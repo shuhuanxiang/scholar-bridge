@@ -37,7 +37,12 @@ function run(host: ReturnType<typeof workflow>, id: string): void {
   if (command.editorCallback) command.editorCallback(host.editor, host.view);
   else command.checkCallback?.(false);
 }
-async function translate(host: ReturnType<typeof workflow>, id = "translate-selection"): Promise<PreviewJob> {
+async function translateDirect(host: ReturnType<typeof workflow>, id = "translate-selection"): Promise<void> {
+  registerTranslateCommands(host.plugin);
+  run(host, id);
+  await vi.waitFor(() => expect(host.editor.transaction).toHaveBeenCalled());
+}
+async function translatePreview(host: ReturnType<typeof workflow>, id = "translate-changed-blocks"): Promise<PreviewJob> {
   registerTranslateCommands(host.plugin);
   run(host, id);
   await vi.waitFor(() => expect(host.preview.currentJob).not.toBeNull());
@@ -60,58 +65,79 @@ afterEach(() => {
 });
 
 describe("review: commands, previews and real translation writes", () => {
-  it("uses custom generation settings for translation, retry and quoted-block refresh", async () => {
+  it("uses custom generation settings and inserts only the direct translation", async () => {
     const host = setup();
     host.plugin.settings.customPrompt = "Use concise prose.";
     Object.assign(host.plugin.settings.llama, { topP: 0.8, topK: 12, maxTokens: 512 });
-    await translate(host);
+    await translateDirect(host);
     expect(vi.mocked(LlamaClient.prototype.translate).mock.lastCall?.[0]).toMatchObject({
       customPrompt: "Use concise prose.", topP: 0.8, topK: 12, maxTokens: 512,
     });
-
-    host.plugin.settings.customPrompt = "Use plain prose.";
-    Object.assign(host.plugin.settings.llama, { topP: 0.7, topK: 0, maxTokens: 1024 });
-    await host.preview.retryHandler!(0);
-    const updated = { customPrompt: "Use plain prose.", topP: 0.7, topK: 0, maxTokens: 1024 };
-    expect(vi.mocked(LlamaClient.prototype.translate).mock.lastCall?.[0]).toMatchObject(updated);
-    await apply(host.preview);
-    expect(host.editor.getValue()).toContain("\n> Translated: Source.\n");
-    expect(scanFreshness(host.editor.getValue()).entries[0].status).toBe("fresh");
-
-    host.editor.setValue(host.editor.getValue().replace("Source.", "Changed."));
-    await translate(host, "translate-changed-blocks");
-    expect(vi.mocked(LlamaClient.prototype.translate).mock.lastCall?.[0]).toMatchObject(updated);
-    await apply(host.preview);
-    expect(host.editor.getValue()).toContain("\n> Translated: Changed.\n");
-    expect(host.editor.getValue()).not.toContain("Translated: Source.");
-    expect(host.editor.getValue()).not.toContain("\n> > Translated:");
-    expect(scanFreshness(host.editor.getValue()).staleEntries).toHaveLength(0);
-    const translations = parseMarkdown(host.editor.getValue()).children.filter((node) => node.type === "translation-block");
-    expect(translations).toHaveLength(1);
-    expect(translations[0]).toMatchObject({ text: "Translated: Changed." });
+    expect(host.editor.getValue()).toBe("Source.\n> Translated: Source.");
+    expect(host.preview.currentJob).toBeNull();
+    expect(host.app.workspace.getLeaf().setViewState).not.toHaveBeenCalled();
   });
 
-  it("quotes each accepted paragraph and preserves adjacent source paragraphs", async () => {
+  it("inserts each translated paragraph directly below its source without a blank line", async () => {
     const host = setup("First source.\n\nSecond source.\n\nTail.");
-    await translate(host);
-    await apply(host.preview);
-    const report = scanFreshness(host.editor.getValue());
-    expect(report.entries.map((entry) => entry.sourceRaw)).toEqual(["First source.", "Second source.", "Tail."]);
-    expect(report.entries.every((entry) => entry.status === "fresh")).toBe(true);
-    expect(host.editor.getValue()).toContain("\n> Translated: First source.\n");
-    expect(host.editor.getValue()).toContain("\n> Translated: Second source.\n");
-    expect(host.editor.getValue()).toContain("\n> Translated: Tail.\n");
+    await translateDirect(host);
+    expect(host.editor.getValue()).toBe(
+      "First source.\n> Translated: First source.\n\nSecond source.\n> Translated: Second source.\n\nTail.\n> Translated: Tail.",
+    );
+    expect(scanFreshness(host.editor.getValue()).entries).toHaveLength(0);
+  });
+
+  it("quotes every translated line and preserves the note's existing blank lines", async () => {
+    const host = setup("Source.\n\nTail.");
+    host.editor.setSelection({ line: 0, ch: 0 }, { line: 0, ch: 7 });
+    vi.mocked(LlamaClient.prototype.translate).mockImplementation(async (request) => ({
+      blocks: [{ id: request.blocks[0].id, translation: "First line.\r\n\r\nSecond line." }],
+      raw: "", model: "test",
+    }));
+    await translateDirect(host);
+    expect(host.editor.getValue()).toBe("Source.\n> First line.\n>\n> Second line.\n\nTail.");
+  });
+
+  it("translates only the selected text and inserts below its intact source line", async () => {
+    const host = setup("Before the selection after.\n\nTail.");
+    host.editor.setSelection({ line: 0, ch: 20 }, { line: 0, ch: 7 });
+    await translateDirect(host);
+    expect(vi.mocked(LlamaClient.prototype.translate).mock.lastCall?.[0].blocks).toMatchObject([
+      { text: "the selection" },
+    ]);
+    expect(host.editor.getValue()).toBe("Before the selection after.\n> Translated: the selection\n\nTail.");
+  });
+
+  it("excludes the next line when the selection ends at its start", async () => {
+    const host = setup("Selected.\nUnselected.");
+    host.editor.setSelection({ line: 0, ch: 0 }, { line: 1, ch: 0 });
+    await translateDirect(host);
+    expect(host.editor.getValue()).toBe("Selected.\n> Translated: Selected.\nUnselected.");
+  });
+
+  it("rejects a direct insert when the source line changes during translation", async () => {
+    const host = setup("Selected. Original.");
+    host.editor.setSelection({ line: 0, ch: 0 }, { line: 0, ch: 9 });
+    vi.mocked(LlamaClient.prototype.translate).mockImplementation(async (request) => {
+      host.editor.setValue("Selected. Edited.");
+      return { blocks: [{ id: request.blocks[0].id, translation: "OUTDATED" }], raw: "", model: "test" };
+    });
+    registerTranslateCommands(host.plugin);
+    run(host, "translate-selection");
+    await vi.waitFor(() => expect(notices.some((notice) => notice.includes("note has changed"))).toBe(true));
+    expect(host.editor.getValue()).toBe("Selected. Edited.");
+    expect(host.editor.transaction).not.toHaveBeenCalled();
   });
 
   it.each(["```python", "~~~~python", "````python"])("excludes the complete %s fence even after internal blank lines", async (fence) => {
     const close = fence.match(/^[`~]+/)![0];
     const host = setup(`Intro.\n\n${fence}\nprint("first")\n\nprint("second")\n${close}\n\nEnd.`);
-    const job = await translate(host);
-    expect(job.items.map((item) => item.input.range.raw)).toEqual(["Intro.", "End."]);
+    await translateDirect(host);
     const requests = vi.mocked(LlamaClient.prototype.translate).mock.calls;
     expect(JSON.stringify(requests)).not.toContain("print");
-    await apply(host.preview);
     expect(host.editor.getValue()).toContain(`${fence}\nprint("first")\n\nprint("second")\n${close}`);
+    expect(host.editor.getValue()).toContain("Intro.\n> Translated: Intro.");
+    expect(host.editor.getValue()).toContain("End.\n> Translated: End.");
   });
 
   it("uses whole-document context for a selection entirely inside code", async () => {
@@ -123,35 +149,36 @@ describe("review: commands, previews and real translation writes", () => {
     expect(LlamaClient.prototype.translate).not.toHaveBeenCalled();
   });
 
-  it("keeps frontmatter and headings out of the replacement ranges", async () => {
+  it("keeps frontmatter and headings out of translation requests", async () => {
     const host = setup("---\ntitle: Title\n---\n# Heading\nBody.\n\n```md\n# Not a heading\n```\n\nTail.");
-    const job = await translate(host);
-    expect(job.items.map((item) => item.input.range.startLine)).toEqual([4, 10]);
-    await host.plugin.applyTranslationJob(job.items.map((item) => item.input), "replace", job.filePath);
-    expect(host.editor.getValue()).toMatch(/^---\ntitle: Title\n---\n# Heading\n/);
+    await translateDirect(host);
+    expect(host.editor.getValue()).toMatch(/^---\ntitle: Title\n---\n# Heading\nBody\.\n> Translated: Body\./);
     expect(host.editor.getValue()).toContain("```md\n# Not a heading\n```");
+    expect(host.editor.getValue()).toContain("Tail.\n> Translated: Tail.");
   });
 
   it("does not let a code heading truncate section translation", async () => {
     const host = setup("# Real\nIntro.\n\n```md\n# Fake\n```\n\nTail.\n\n# Next\nOutside.");
     host.editor.setSelection({ line: 1, ch: 0 });
-    const job = await translate(host, "translate-section");
-    expect(job.items.map((item) => item.input.range.raw)).toEqual(["Intro.", "Tail."]);
+    await translateDirect(host, "translate-section");
+    expect(host.editor.getValue()).toContain("Intro.\n> Translated: Intro.");
+    expect(host.editor.getValue()).toContain("Tail.\n> Translated: Tail.");
+    expect(host.editor.getValue()).not.toContain("Outside.\n> Translated: Outside.");
   });
 
   it("preserves old translations for failed blocks when applying successful blocks", async () => {
     const first = buildTranslationBlock(input("First original.", "p_1", "KEEP FIRST"));
     const second = buildTranslationBlock(input("Second original.", "p_2", "KEEP SECOND"));
     const host = setup(`First changed.\n\n${first}\n\nSecond changed.\n\n${second}`);
-    vi.mocked(LlamaClient.prototype.translate).mockImplementation(async (request) => ({
-      blocks: request.blocks.length > 1
-        ? [{ id: request.blocks[0].id, translation: "NEW FIRST" }]
-        : request.blocks[0].text.startsWith("Second")
-          ? []
-          : [{ id: request.blocks[0].id, translation: "NEW FIRST" }],
-      raw: "", model: "test",
-    }));
-    const job = await translate(host, "translate-changed-blocks");
+    vi.mocked(LlamaClient.prototype.translate).mockImplementation(async (request) => {
+      const first = request.blocks[0];
+      const canTranslate = request.blocks.length > 1 || !first.text.startsWith("Second");
+      return {
+        blocks: canTranslate ? [{ id: first.id, translation: "NEW FIRST" }] : [],
+        raw: "", model: "test",
+      };
+    });
+    const job = await translatePreview(host, "translate-changed-blocks");
     expect(job.items[1]).toMatchObject({ included: false, failed: true });
     const accepts = host.preview.contentEl.querySelectorAll<HTMLButtonElement>(".scholar-bridge-preview-actions button:first-child");
     expect(accepts[1].disabled).toBe(true);
@@ -165,15 +192,15 @@ describe("review: commands, previews and real translation writes", () => {
     const first = buildTranslationBlock(input("First original.", "p_1", "KEEP FIRST"));
     const second = buildTranslationBlock(input("Second original.", "p_2", "KEEP SECOND"));
     const host = setup(`First changed.\n\n${first}\n\nSecond changed.\n\n${second}`);
-    vi.mocked(LlamaClient.prototype.translate).mockImplementation(async (request) => ({
-      blocks: request.blocks.length > 1
-        ? [{ id: request.blocks[0].id, translation: "NEW FIRST" }]
-        : request.blocks[0].text.startsWith("Second")
-          ? []
-          : [{ id: request.blocks[0].id, translation: "NEW FIRST" }],
-      raw: "", model: "test",
-    }));
-    await translate(host, "translate-changed-blocks");
+    vi.mocked(LlamaClient.prototype.translate).mockImplementation(async (request) => {
+      const first = request.blocks[0];
+      const canTranslate = request.blocks.length > 1 || !first.text.startsWith("Second");
+      return {
+        blocks: canTranslate ? [{ id: first.id, translation: "NEW FIRST" }] : [],
+        raw: "", model: "test",
+      };
+    });
+    await translatePreview(host, "translate-changed-blocks");
     vi.mocked(LlamaClient.prototype.translate).mockImplementation(async (request) => ({
       blocks: request.blocks.map((block) => ({ id: block.id, translation: "NEW SECOND" })),
       raw: "", model: "test",
@@ -201,7 +228,7 @@ describe("review: commands, previews and real translation writes", () => {
       host.editor.setValue(host.editor.getValue().replace("Changed.", "Newer."));
       return { blocks: request.blocks.map((block) => ({ id: block.id, translation: "OUTDATED" })), raw: "", model: "test" };
     });
-    const job = await translate(host, "translate-changed-blocks");
+    const job = await translatePreview(host, "translate-changed-blocks");
     await expect(host.plugin.applyTranslationJob(job.items.map((item) => item.input), job.writeMode, job.filePath)).rejects.toThrow("note has changed");
     expect(host.editor.getValue()).toContain("KEEP OLD");
     expect(host.editor.transaction).not.toHaveBeenCalled();

@@ -28,10 +28,10 @@ An academic-writing bridge for [Obsidian](https://obsidian.md): LaTeX ↔ Markdo
 
 - Chinese ↔ English translation of selections, paragraphs, sections, or only the blocks changed since the last pass, with math, code, and links protected from translation.
 - Powered by [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`: **everything runs on your machine**, nothing is sent to any cloud service.
-- Every translation is shown in a preview before anything is written; you can insert below as a blockquote, replace, or create a translated copy.
+- Selection, paragraph and section translations appear as Markdown blockquotes directly below their sources. Refreshing stored translation blocks uses the preview and their recorded write modes.
 - Customize the translator prompt and generation settings: temperature, `top_p` (default `0.95`), `top_k` (default `40`; `0` disables it), and maximum output tokens (`0` uses the server default). Changes apply to translations, retries and refreshed blocks, and are included in cache keys.
 - Glossary support (`term => translation`, `term => preserve` to keep terms verbatim) with YAML import, plus a persistent LRU translation cache so re-runs are instant.
-- Translation targets prose paragraphs in the selected lines. Headings, fenced code, tables, quotes, lists, math blocks, and stored translations remain untouched. Long paragraphs are split into bounded requests and applied only after every part succeeds.
+- Translation targets the selected text within prose paragraphs. Headings, fenced code, tables, quotes, lists, math blocks, and stored translations remain untouched. Long paragraphs are split into bounded requests and inserted only after every part succeeds.
 - Failed blocks remain unselected in the preview and can be retried or edited. Applying refreshed translations checks both the source and the old translation; damaged translation markers are skipped.
 - LaTeX exports retain replacement-mode translations and omit insert-below/bilingual annotations. Legacy markers without a stored write mode omit the translation only when its preceding source still matches; otherwise they retain the translation text to avoid losing prose.
 - After changing the model, host/port, GPU layers, or context size, the next translator start or translation request restarts the managed service with the updated configuration.
@@ -57,19 +57,18 @@ An academic-writing bridge for [Obsidian](https://obsidian.md): LaTeX ↔ Markdo
    - host/port (defaults: `127.0.0.1:8080`).
 2. Run the command **ScholarBridge: Start local translator**. The plugin launches `llama-server` for you and shuts it down when idle or when Obsidian closes.
    - Leave the executable path empty to connect-only mode: point host/port at a server you started yourself.
-3. Select some text and run **ScholarBridge: Translate selection** (or translate a paragraph/section from the command palette). Review the preview, then apply.
+3. Select some text and run **ScholarBridge: Translate selection** (or translate a paragraph/section from the command palette). The translation is inserted directly below the source.
 
 The **Custom translation prompt** setting replaces the default translator instructions. Leave it empty to restore the default. Language direction, style, glossary and required JSON/placeholder rules are added automatically. The output token limit applies to each request, including the JSON envelope; a truncated response must be retried with a larger limit or less source text.
 
-**Insert below source** keeps the source and writes the translation as:
+The command inserts only the Markdown blockquote, starting on the line immediately below the source.
 
 ```markdown
 Original text.
-
 > Translated text.
 ```
 
-Hidden metadata comments still track the source and translation. Multi-line translations stay inside the quote, including blank lines. Existing plain translation blocks remain readable; refreshing an insert-below block uses the new quote format. Other write modes retain their existing layout.
+Refreshing an existing stored translation block continues to use the translation preview and its stored write mode.
 
 ## Privacy
 

@@ -1,5 +1,5 @@
 import { stat as fsStat } from "node:fs/promises";
-import { MarkdownView, Notice, type Editor } from "obsidian";
+import { MarkdownView, Notice, type Editor, type EditorPosition } from "obsidian";
 import { t } from "../i18n";
 import type ScholarBridgePlugin from "../main";
 import { parseMarkdown } from "../core/parser/markdown/markdown-parser";
@@ -16,7 +16,8 @@ import { validateLlamaSettings, type ScholarBridgeSettings } from "../settings/s
 
 /**
  * Translate commands (PRODUCT_REQUIREMENTS.md FR-5).
- * Flow per FR-7: Translate → Preview → Apply (only Apply writes).
+ * Ordinary translation writes each result directly below its source. Stored
+ * translation blocks continue to use the preview flow when they are refreshed.
  */
 export function registerTranslateCommands(plugin: ScholarBridgePlugin): void {
   plugin.addCommand({
@@ -72,23 +73,30 @@ export function registerTranslateCommands(plugin: ScholarBridgePlugin): void {
 // Target gathering
 // ---------------------------------------------------------------------------
 
-function gatherSelection(editor: Editor): SourceRange | null {
-  const sel = editor.listSelections()[0];
-  if (!sel) return null;
-  const { anchor, head } = sel;
-  const startLine = Math.min(anchor.line, head.line);
-  const endLine = Math.max(anchor.line, head.line);
-  // Replace mode writes whole lines, so translate exactly the full bounding
-  // lines — what gets translated must equal what gets replaced.
-  const raw = editor.getRange(
-    { line: startLine, ch: 0 },
-    { line: endLine, ch: editor.getLine(endLine).length },
-  );
-  if (!raw.trim()) return null;
-  return { raw, startLine, endLine };
+interface TranslationTarget {
+  from: EditorPosition;
+  to: EditorPosition;
 }
 
-function gatherParagraph(editor: Editor): SourceRange | null {
+function wholeLines(editor: Editor, startLine: number, endLine: number): TranslationTarget {
+  return { from: { line: startLine, ch: 0 }, to: { line: endLine, ch: editor.getLine(endLine).length } };
+}
+
+function gatherSelection(editor: Editor): TranslationTarget | null {
+  const from = editor.getCursor("from");
+  const to = editor.getCursor("to");
+  let target = { from, to };
+  if (from.line === to.line && from.ch === to.ch) {
+    target = wholeLines(editor, from.line, from.line);
+  } else if (to.ch === 0) {
+    // The selection ends before any characters on this line.
+    const endLine = to.line - 1;
+    target = { from, to: { line: endLine, ch: editor.getLine(endLine).length } };
+  }
+  return editor.getRange(target.from, target.to).trim() ? target : null;
+}
+
+function gatherParagraph(editor: Editor): TranslationTarget | null {
   const line = editor.getCursor().line;
   if (!editor.getLine(line).trim()) return null;
   let start = line;
@@ -96,16 +104,16 @@ function gatherParagraph(editor: Editor): SourceRange | null {
   let end = line;
   const last = editor.lineCount() - 1;
   while (end < last && editor.getLine(end + 1).trim()) end++;
-  return { raw: editor.getRange({ line: start, ch: 0 }, { line: end, ch: editor.getLine(end).length }), startLine: start, endLine: end };
+  return wholeLines(editor, start, end);
 }
 
-function gatherSection(editor: Editor): SourceRange | null {
+function gatherSection(editor: Editor): TranslationTarget | null {
   const line = editor.getCursor().line;
   const headings = parseMarkdown(editor.getValue()).children.filter((node) => node.type === "heading");
   const heading = headings.filter((node) => (node.source?.startLine ?? Infinity) <= line).at(-1);
   const headingLine = heading?.source?.startLine ?? -1;
   const level = heading?.level ?? null;
-  // Body starts below the heading so replace mode never deletes the heading.
+  // Translate the section body below its heading.
   const start = level !== null ? headingLine + 1 : 0;
   let end = editor.lineCount() - 1;
   if (level !== null) {
@@ -113,9 +121,7 @@ function gatherSection(editor: Editor): SourceRange | null {
     if (next) end = next.source!.startLine! - 1;
   }
   while (end >= start && !editor.getLine(end).trim()) end--;
-  if (start > end) return null;
-  const raw = editor.getRange({ line: start, ch: 0 }, { line: end, ch: editor.getLine(end).length });
-  return raw.trim() ? { raw, startLine: start, endLine: end } : null;
+  return start <= end ? wholeLines(editor, start, end) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,18 +179,22 @@ function generationOptions(settings: ScholarBridgeSettings) {
  * Use full-document syntax context so partial selections inside code, math,
  * metadata and stored translations cannot masquerade as prose.
  */
-function splitParagraphs(editor: Editor, range: SourceRange): SourceRange[] {
-  const parts: SourceRange[] = [];
+function splitParagraphs(editor: Editor, target: TranslationTarget): { range: SourceRange; sourceText: string }[] {
+  const parts: { range: SourceRange; sourceText: string }[] = [];
   for (const node of parseMarkdown(editor.getValue()).children) {
     if (node.type !== "paragraph" || node.source?.startLine === undefined || node.source.endLine === undefined) continue;
-    const startLine = Math.max(range.startLine, node.source.startLine);
-    const endLine = Math.min(range.endLine, node.source.endLine);
+    const startLine = Math.max(target.from.line, node.source.startLine);
+    const endLine = Math.min(target.to.line, node.source.endLine);
     if (startLine > endLine) continue;
-    const raw = editor.getRange(
-      { line: startLine, ch: 0 },
-      { line: endLine, ch: editor.getLine(endLine).length },
-    );
-    if (hasTranslatableProse(raw)) parts.push({ raw, startLine, endLine });
+    const lines = wholeLines(editor, startLine, endLine);
+    const sourceText = editor.getRange(
+      startLine === target.from.line ? target.from : lines.from,
+      endLine === target.to.line ? target.to : lines.to,
+    ).trim();
+    if (!hasTranslatableProse(sourceText)) continue;
+    // Verify the full source lines before inserting, including any unselected text.
+    const raw = editor.getRange(lines.from, lines.to);
+    parts.push({ range: { raw, startLine, endLine }, sourceText });
   }
   return parts;
 }
@@ -192,14 +202,14 @@ function splitParagraphs(editor: Editor, range: SourceRange): SourceRange[] {
 async function translateTarget(
   plugin: ScholarBridgePlugin,
   editor: Editor,
-  range: SourceRange | null,
+  target: TranslationTarget | null,
   filePath: string,
 ): Promise<void> {
-  if (!range) {
+  if (!target) {
     new Notice(t("ScholarBridge: nothing to translate at the cursor."));
     return;
   }
-  const parts = splitParagraphs(editor, range);
+  const parts = splitParagraphs(editor, target);
   if (parts.length === 0) {
     new Notice(t("ScholarBridge: selection contains no translatable prose."));
     return;
@@ -211,12 +221,12 @@ async function translateTarget(
       new Notice(translatorNotReadyMessage(plugin));
       return;
     }
-    const nodeIdOf = (part: SourceRange): string =>
-      `p_${part.startLine}_${Math.abs(hashString(part.raw)).toString(16).slice(0, 8)}`;
+    const nodeIdOf = ({ range, sourceText }: (typeof parts)[number]): string =>
+      `p_${range.startLine}_${Math.abs(hashString(sourceText)).toString(16).slice(0, 8)}`;
     const blocks = parts.map((part) => ({
       nodeId: nodeIdOf(part),
       type: "paragraph" as const,
-      sourceText: part.raw.trim(),
+      sourceText: part.sourceText,
     }));
     const { blocks: results, model, problems } = await translateBlocks(
       makeClient(plugin),
@@ -232,39 +242,34 @@ async function translateTarget(
       },
     );
     const byId = new Map(results.map((r) => [r.nodeId, r]));
-    const items: PreviewItem[] = [];
+    const inputs: ReinsertionInput[] = [];
     for (const part of parts) {
       const nodeId = nodeIdOf(part);
       const result = byId.get(nodeId);
-      items.push({
-        input: {
-          nodeId,
-          translation: result?.translation ?? "",
-          range: part,
-          // Apply-time guard: the target lines must still hold this exact source.
-          verifyRaw: part.raw,
-          meta: {
-            sourceLanguage: settings.sourceLanguage,
-            targetLanguage: settings.targetLanguage,
-            model,
-            glossaryVersion: result?.glossaryVersion ?? glossaryVersion(settings.glossary),
-            promptVersion: PROMPT_VERSION,
-          },
+      if (!result?.translation.trim()) continue;
+      inputs.push({
+        nodeId,
+        translation: result.translation,
+        range: part.range,
+        verifyRaw: part.range.raw,
+        meta: {
+          sourceLanguage: settings.sourceLanguage,
+          targetLanguage: settings.targetLanguage,
+          model,
+          glossaryVersion: result.glossaryVersion ?? glossaryVersion(settings.glossary),
+          promptVersion: PROMPT_VERSION,
         },
-        included: Boolean(result),
-        edited: false,
-        failed: !result,
       });
     }
-    if (items.every((item) => item.failed)) {
+    if (inputs.length === 0) {
       const detail = problems?.join("; ") ?? "";
       throw new Error(detail || "no paragraphs were translated");
     }
-    const failed = items.filter((item) => item.failed).length;
+    const failed = parts.length - inputs.length;
     if (failed > 0) {
-      new Notice(t("ScholarBridge: {{n}} paragraph(s) could not be translated — retry them from the preview.", { n: failed }));
+      new Notice(t("ScholarBridge: {{n}} paragraph(s) could not be translated.", { n: failed }));
     }
-    await showPreview(plugin, items, settings.writeMode, filePath);
+    await plugin.insertTranslationsBelow(inputs, filePath);
   } catch (err) {
     if (plugin.lifetime.signal.aborted) return;
     new Notice(t("ScholarBridge: translation failed — {{msg}}", { msg: err instanceof Error ? err.message : String(err) }));

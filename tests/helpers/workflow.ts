@@ -20,7 +20,12 @@ export function createEditor(initial: string) {
     setValue: (next: string) => { value = next; },
     getLine: (line: number) => value.split("\n")[line],
     lineCount: () => value.split("\n").length,
-    getCursor: () => head,
+    getCursor: (side: "from" | "to" | "head" | "anchor" = "head") => {
+      if (side === "head") return head;
+      if (side === "anchor") return anchor;
+      const forward = offset(anchor) <= offset(head);
+      return (side === "from") === forward ? anchor : head;
+    },
     setSelection: (nextAnchor: EditorPosition, nextHead = nextAnchor) => { anchor = nextAnchor; head = nextHead; },
     listSelections: () => [{ anchor, head }],
     getSelection: () => value.slice(Math.min(offset(anchor), offset(head)), Math.max(offset(anchor), offset(head))),

@@ -32,7 +32,7 @@ import {
  *
  * Binding rules (PRODUCT_REQUIREMENTS.md §5 / IMPLEMENTATION_PLAN.md §14):
  * - never rewrite user source when parsing is uncertain;
- * - translation previews before any write;
+ * - ordinary translations insert blockquotes below their sources; stored block refreshes use previews;
  * - no model startup here: `onload()` must stay cheap.
  */
 export default class ScholarBridgePlugin extends Plugin {
@@ -163,6 +163,39 @@ export default class ScholarBridgePlugin extends Plugin {
       throw new Error("the note has changed since translation — re-run Translate");
     }
     this.validateTranslationInputs(editor, inputs);
+    editor.transaction({ changes });
+  }
+
+  /** Insert ordinary translations as Markdown quotes directly below their source lines. */
+  async insertTranslationsBelow(inputs: ReinsertionInput[], filePath: string): Promise<void> {
+    this.lifetime.signal.throwIfAborted();
+    if (inputs.length === 0) return;
+    const view = this.findMarkdownViewByPath(filePath);
+    if (!view || !view.file) {
+      throw new Error(
+        `note “${filePath}” is not open in any editor — reopen it and re-run Translate`,
+      );
+    }
+    const editor = view.editor;
+    this.validateTranslationInputs(editor, inputs);
+
+    await this.app.workspace.revealLeaf(view.leaf);
+    this.lifetime.signal.throwIfAborted();
+    if (view.file?.path !== filePath) {
+      throw new Error("the note has changed since translation — re-run Translate");
+    }
+    this.validateTranslationInputs(editor, inputs);
+
+    const sorted = [...inputs].sort((a, b) => a.range.endLine - b.range.endLine);
+    const changes = sorted.map(({ range, translation }) => {
+      const quote = translation.trim().split(/\r?\n/)
+        .map((line) => line.trim() ? `> ${line}` : ">")
+        .join("\n");
+      return {
+        from: { line: range.endLine, ch: editor.getLine(range.endLine).length },
+        text: `\n${quote}`,
+      };
+    });
     editor.transaction({ changes });
   }
 
